@@ -1,0 +1,4 @@
+flask
+supabase
+pytsk3
+volatility3
