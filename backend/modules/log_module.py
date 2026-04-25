@@ -1,0 +1,2 @@
+class LogModule:
+    pass
