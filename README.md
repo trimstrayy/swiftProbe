@@ -16,6 +16,36 @@ SwiftProbe is a digital investigation platform designed to reconstruct incidents
 | Core Libraries | pytsk3, Volatility 3, python-evtx, ReportLab |
 | Authentication | Supabase Auth |
 
+## Host Prerequisites
+
+To develop and execute SwiftProbe, install the following software and drivers on the host machine. These tools provide the required environment for low-level binary analysis and cloud synchronization.
+
+### 1. Core Runtime Environments
+
+- Python 3.10.x or higher: Primary runtime for forensic modules. During installation, enable `Add to PATH`.
+- Node.js (LTS): Required for the React + Vite frontend development server and npm package management.
+
+### 2. Forensic System Dependencies
+
+SwiftProbe interacts with raw disk images and memory structures, so these system-level dependencies are required:
+
+- The Sleuth Kit (TSK): Required by `pytsk3`. On Windows, install compiled binaries so Python can interface with NTFS/FAT file systems.
+- Microsoft Visual C++ Build Tools: Required on Windows to compile forensic library extensions during `pip install`.
+- Git: Required for version control and modular team development workflows.
+
+### 3. Database and API Tools
+
+- Supabase CLI (optional): Useful for managing local database migrations and edge functions.
+- Postman or Insomnia: Recommended for testing Flask API endpoints before React frontend integration.
+
+### 4. Recommended Development Environment
+
+- Visual Studio Code (VS Code) with the following extensions:
+	- Python (Microsoft)
+	- ES7+ React/Redux/React-Native snippets
+	- Tailwind CSS IntelliSense
+	- Thunder Client (API testing)
+
 ## System Architecture
 
 SwiftProbe isolates forensic logic into independent modules that communicate with a central database. That keeps disk analysis, memory analysis, and log parsing parallelized without data overlap.
@@ -58,14 +88,3 @@ swiftprobe/
 - Memory forensics: extract active network connections and process trees from RAM dumps.
 - Timeline correlation: build a unified chronological sequence of events from MFT and system logs.
 - Reporting: generate cryptographically validated PDF reports of all findings.
-
-## Initialization Instructions For AI Collaborator
-
-Use the following steps to initialize the project structure:
-
-1. Create the top-level directories `backend`, `frontend`, and `evidence`.
-2. Inside `backend`, initialize a Flask application in `app.py`.
-3. Create a `modules` directory under `backend` and add empty classes for `DiskModule`, `RAMModule`, and `LogModule`.
-4. Set up `backend/core/supabase_db.py` to initialize the Supabase client using environment variables.
-5. Inside `frontend`, initialize a Vite + React project and install Tailwind CSS.
-6. Generate `backend/requirements.txt` with the backend dependencies: `flask`, `supabase`, `pytsk3`, and `volatility3`.
