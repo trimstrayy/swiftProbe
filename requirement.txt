@@ -1,0 +1,6 @@
+flask
+supabase
+pytsk3
+volatility3
+python-evtx
+reportlab
