@@ -88,3 +88,7 @@ swiftprobe/
 - Memory forensics: extract active network connections and process trees from RAM dumps.
 - Timeline correlation: build a unified chronological sequence of events from MFT and system logs.
 - Reporting: generate cryptographically validated PDF reports of all findings.
+
+## Evidence Source
+
+The pre-existing evidence bundled with this project was collected from the NIST CFReDS File Carving archive: https://cfreds-archive.nist.gov/FileCarving/index.html. Treat these samples as reference datasets for local validation only, and keep any additional raw evidence outside version control.
