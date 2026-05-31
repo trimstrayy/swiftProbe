@@ -1,4 +1,5 @@
 flask
 supabase
+python-dotenv
 pytsk3
 volatility3

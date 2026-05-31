@@ -1,7 +1,6 @@
 import os
-from typing import List, Dict, Tuple
-
 from pathlib import Path
+from typing import Dict, List, Optional
 
 CHUNK = 1024 * 1024
 
@@ -25,6 +24,27 @@ def _write_carved(outdir: str, base_name: str, offset: int, data: bytes) -> str:
     return path
 
 
+def _hash_and_match_carved_file(carved_path: str, offset: int, target_hashes: Optional[set[str]] = None, source_image: Optional[str] = None) -> Dict:
+    import backend.hasher as hasher
+
+    metadata = hasher.hash_file(carved_path)
+    carved_hash = hasher.normalize_sha256(str(metadata["hash"]))
+    matches = {
+        "sha256": carved_hash,
+        "match_found": False,
+        "target_hash": None,
+    }
+
+    known_targets = target_hashes if target_hashes is not None else hasher.fetch_target_hashes()
+    if carved_hash in known_targets:
+        matches["match_found"] = True
+        matches["target_hash"] = carved_hash
+        hasher.mark_target_match(carved_hash, carved_hash, os.path.basename(carved_path), offset, source_image=source_image)
+
+    metadata.update(matches)
+    return metadata
+
+
 def carve_from_image(image_path: str, output_dir: str, min_size: int = 512, max_size: int = 50 * 1024 * 1024) -> List[Dict]:
     """Scan `image_path` for known file signatures and extract carved files.
 
@@ -32,11 +52,16 @@ def carve_from_image(image_path: str, output_dir: str, min_size: int = 512, max_
     with keys: path, offset, length, type, sha256 (if hasher available)
     """
     import backend.hasher as hasher
+    from modules import disk_module
 
     _ensure_outdir(output_dir)
     results: List[Dict] = []
+    target_hashes = hasher.fetch_target_hashes()
 
-    with open(image_path, "rb") as f:
+    if not disk_module.is_forensic_image(image_path):
+        raise ValueError("Expected a forensic image path such as .raw, .dd, .E01, .img, or .bin")
+
+    with disk_module.open_image_stream(image_path) as f:
         buf = b""
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         offset = 0
@@ -84,17 +109,13 @@ def carve_from_image(image_path: str, output_dir: str, min_size: int = 512, max_
 
                     if len(carved) >= min_size:
                         outpath = _write_carved(output_dir, base_name + f".{fmt}", abs_offset, carved)
-                        meta = {
+                        meta = _hash_and_match_carved_file(outpath, abs_offset, target_hashes=target_hashes, source_image=image_path)
+                        meta.update({
                             "path": outpath,
                             "offset": abs_offset,
                             "length": len(carved),
                             "type": fmt,
-                        }
-                        try:
-                            hmeta = hasher.hash_file(outpath)
-                            meta["sha256"] = hmeta.get("hash")
-                        except Exception:
-                            meta["sha256"] = None
+                        })
                         results.append(meta)
 
                     # advance start to continue scanning after this header
