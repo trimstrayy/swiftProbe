@@ -1,6 +1,9 @@
 flask
+flask-cors
 supabase
+python-dotenv
 pytsk3
 volatility3
 python-evtx
 reportlab
+pandas

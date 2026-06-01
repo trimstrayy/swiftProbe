@@ -2,6 +2,8 @@
 
 This directory contains forensic evidence datasets for testing and validation of SwiftProbe modules.
 
+The latest repo update removed the bundled binary evidence from git history, so this folder is now documentation-only unless you add your own local datasets. Keep those datasets untracked.
+
 ## Available Datasets from Digital Corpora
 
 ### Disk Images
@@ -131,6 +133,8 @@ def scan_disk_image(image_name: str):
     # ... rest of implementation
 ```
 
+The current repository layout already includes the evidence guidance files and ignore rules, so any images you download locally should stay inside ignored evidence subfolders.
+
 ---
 
 ## Testing Evidence
@@ -174,6 +178,12 @@ print(f'Parsed {len(events)} events')
 - **Source Documentation**: Always document the source and provenance of evidence.
 - **Evidence Integrity**: Verify SHA-256 hashes after download to ensure integrity.
 - **Chain of Custody**: SwiftProbe automatically logs all analysis operations for audit trails.
+
+## Repository Notes
+
+- The pre-existing sample evidence source referenced in the main README is the NIST CFReDS File Carving archive.
+- Avoid committing raw evidence files, extracted samples, or downloads directories.
+- Use this folder for provenance notes, hashes, and test instructions instead of storing large binaries in git.
 
 ---
 

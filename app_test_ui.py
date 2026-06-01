@@ -1,0 +1,181 @@
+"""Streamlit-based test UI for SwiftProbe evidence examination.
+
+Run with: `streamlit run app_test_ui.py`
+
+The app supports device file import, chunked hashing, carving, and end-to-end
+orchestration against the evidence pipeline.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import List, Dict
+
+import streamlit as st
+from backend.hasher import hash_file
+from backend.core.supabase_db import get_supabase_client
+from modules.carver import carve_from_image
+
+
+def fetch_targets(client) -> List[Dict]:
+    if client is None:
+        return []
+    try:
+        resp = client.table("target_artifacts").select("filename,expected_sha256,description").execute()
+        return getattr(resp, "data", []) or []
+    except Exception:
+        return []
+
+
+def save_uploaded_file(uploaded_file) -> Path:
+    temp_root = Path("evidence") / "uploads"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    suffix = Path(uploaded_file.name).suffix or ".bin"
+    temp_path = temp_root / f"uploaded_{uploaded_file.name}"
+    temp_path.write_bytes(uploaded_file.getbuffer())
+    return temp_path
+
+
+def render_target_fingerprints(client):
+    st.subheader("Active Target Fingerprints")
+    targets = fetch_targets(client)
+    if not targets:
+        st.info("No Supabase client configured or no targets available.")
+        return []
+    st.dataframe(targets, use_container_width=True, hide_index=True)
+    return targets
+
+
+def render_recovered_feed(client, case_id: str):
+    st.subheader(f"Recovered Files — Case: {case_id}")
+    recovered = fetch_recovered(client, case_id)
+    if recovered:
+        positives = [r for r in recovered if r.get("match_found")]
+        if positives:
+            st.error(f"{len(positives)} positive match(es) detected for case {case_id}!")
+        st.dataframe(recovered, use_container_width=True, hide_index=True)
+    else:
+        st.info("No recovered files recorded for this case yet.")
+    return recovered
+
+
+def safe_stage_hash(file_path: Path):
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    return hash_file(str(file_path))
+
+
+def safe_stage_carve(file_path: Path, case_id: str):
+    carve_dir = Path("evidence") / "carved_output" / case_id / file_path.stem
+    carve_dir.mkdir(parents=True, exist_ok=True)
+    return carve_from_image(str(file_path), str(carve_dir))
+
+
+def safe_stage_orchestrate(file_path: Path, case_id: str):
+    from backend.orchestrator import process_evidence_pipeline
+
+    return process_evidence_pipeline(str(file_path), case_id)
+
+
+def fetch_recovered(client, case_id: str) -> List[Dict]:
+    if client is None:
+        return []
+    try:
+        resp = client.table("files_recovered").select("*").eq("case_id", case_id).order("physical_offset_bytes", {"ascending": True}).execute()
+        return getattr(resp, "data", []) or []
+    except Exception:
+        return []
+
+
+def main():
+    st.set_page_config(page_title="SwiftProbe — Test UI", layout="wide")
+
+    st.sidebar.title("SwiftProbe Test Runner")
+    case_id = st.sidebar.text_input("Active Case ID", value="CASE-2026-NIST-01")
+    image_path = st.sidebar.text_input("Path to Raw Forensic Image", value="evidence/L0_Graphic.dd")
+    uploaded_file = st.sidebar.file_uploader(
+        "Import forensic file from your device",
+        type=["dd", "raw", "img", "bin", "e01"],
+    )
+
+    supa = get_supabase_client()
+
+    active_file_path = Path(image_path)
+    if uploaded_file is not None:
+        active_file_path = save_uploaded_file(uploaded_file)
+        st.sidebar.success(f"Imported: {uploaded_file.name}")
+
+    st.sidebar.caption(f"Active file: {active_file_path}")
+
+    tab_hash, tab_carve, tab_orchestrate = st.tabs(["Hashing", "File Carving", "Orchestration"])
+
+    with tab_hash:
+        left, right = st.columns([1, 1])
+        with left:
+            st.subheader("Evidence Hashing")
+            st.write("Apply chunked SHA-256 to the selected file before any extraction.")
+            if st.button("Calculate SHA-256", key="hash_only"):
+                try:
+                    with st.spinner("Hashing evidence..."):
+                        if not active_file_path.exists():
+                            raise FileNotFoundError(f"File not found: {active_file_path}")
+                        meta = safe_stage_hash(active_file_path)
+                        st.success("Hash computed successfully")
+                        st.json(meta)
+                except Exception as exc:
+                    st.exception(exc)
+        with right:
+            render_target_fingerprints(supa)
+
+    with tab_carve:
+        left, right = st.columns([1, 1])
+        with left:
+            st.subheader("File Carving")
+            st.write("Run the signature-based carver on the selected evidence file.")
+            if st.button("Run Carver", key="carve_only"):
+                try:
+                    with st.spinner("Carving unallocated sectors..."):
+                        if not active_file_path.exists():
+                            raise FileNotFoundError(f"File not found: {active_file_path}")
+                        carved = safe_stage_carve(active_file_path, case_id)
+                        st.success(f"Carver complete — extracted {len(carved)} items")
+                        st.dataframe(carved, use_container_width=True, hide_index=True)
+                except Exception as exc:
+                    st.exception(exc)
+        with right:
+            render_recovered_feed(supa, case_id)
+
+    with tab_orchestrate:
+        st.subheader("Evidence Examination Pipeline")
+        st.write("Recommended order: hash the file, carve it, then orchestrate the final matching and insert stage.")
+
+        col_left, col_right = st.columns([1, 1])
+        with col_left:
+            if st.button("🚀 Execute Full Forensic Pipeline", key="pipeline_full"):
+                try:
+                    if not active_file_path.exists():
+                        raise FileNotFoundError(f"File not found: {active_file_path}")
+
+                    with st.spinner("Processing sectors..."):
+                        hash_meta = safe_stage_hash(active_file_path)
+                        st.info(f"Pre-hash complete: {hash_meta.get('hash')}")
+
+                        carve_meta = safe_stage_carve(active_file_path, case_id)
+                        st.info(f"Carving complete: {len(carve_meta)} items")
+
+                        orch_meta = safe_stage_orchestrate(active_file_path, case_id)
+                        st.success(f"Pipeline complete — processed {len(orch_meta)} carved items")
+
+                        positives = [r for r in orch_meta if r.get("match_found")]
+                        if positives:
+                            st.error(f"{len(positives)} positive match(es) detected in this run")
+                            st.dataframe(positives, use_container_width=True, hide_index=True)
+                except Exception as exc:
+                    st.exception(exc)
+
+        with col_right:
+            render_recovered_feed(supa, case_id)
+
+
+if __name__ == "__main__":
+    main()
