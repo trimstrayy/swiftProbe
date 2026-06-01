@@ -5,6 +5,8 @@ README.md
 
 SwiftProbe is a digital investigation platform designed to reconstruct incidents through bit-for-bit disk analysis, volatile memory extraction, and system log correlation. It follows a "Forensics-as-a-Service" model, where local Python-based analysis engines push validated forensic artifacts to a centralized Supabase backend for real-time collaboration and report generation.
 
+The latest repository update removed accidentally committed sample evidence from git history, added evidence ignore rules, and documented the source of the bundled reference dataset.
+
 ## At A Glance
 
 | Area | Stack |
@@ -80,6 +82,14 @@ swiftprobe/
 ├── evidence/               # Directory for local mounting of raw images
 └── README.md
 ```
+
+## Current Repository State
+
+- `built.md` now summarizes the latest cleanup and the currently available modules.
+- `task.md` documents the phased build plan from environment setup through report generation.
+- `concept.md` explains the forensic workflow behind disk, memory, log, and timeline analysis.
+- `evidence/DATASETS.md` and `evidence/digitalcorpora/README.md` describe local dataset handling and provenance.
+- `.gitignore` blocks raw evidence binaries and extracted dataset folders from being committed.
 
 ## Core Capabilities
 

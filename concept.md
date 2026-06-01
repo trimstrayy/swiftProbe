@@ -1,8 +1,8 @@
-(#) VERDICT — CONCEPTS
+(#) SWIFTPROBE — CONCEPTS
 
 ## Understanding — What you're building
 
-SwiftProbe is a forensic toolkit that ingests and analyzes evidence from multiple sources (disk images, live RAM captures, logs, and Supabase-hosted artifacts) and presents correlated results in a real-time React dashboard. The project prioritizes safe evidence handling (immediate hashing), robust artifact extraction (disk carving, memory plugins), temporal correlation (a master timeline ordered by UTC), and modern realtime UX via Supabase subscriptions.
+SwiftProbe is a forensic toolkit that ingests and analyzes evidence from multiple sources (disk images, live RAM captures, logs, and Supabase-hosted artifacts) and presents correlated results in a real-time React dashboard. The project prioritizes safe evidence handling (immediate hashing), robust artifact extraction (disk carving, memory plugins), temporal correlation (a master timeline ordered by UTC), and modern realtime UX via Supabase subscriptions. The latest update also formalized the sample-evidence source and the repository rules for keeping raw evidence out of git.
 
 ---
 
@@ -43,9 +43,18 @@ SwiftProbe is a forensic toolkit that ingests and analyzes evidence from multipl
 
 ---
 
+## 6. Repository Hygiene and Evidence Provenance
+
+- Concept: Chain of custody includes the repository itself. Sample evidence should be documented, but large binaries should stay outside version control.
+- What to build: Keep the evidence guidance files current, keep raw samples in ignored folders, and record the source of any bundled reference data.
+- Why it matters: Prevents accidental publication of sensitive or bulky evidence while preserving the provenance needed for repeatable testing.
+- Watch: CFReDS File Carving archive and local evidence handling
+
+---
+
 ## Quick NEXT STEPS (suggested)
 
-- Implement a minimal `disk_module` carver that locates and extracts GIF/JPEG/PNG by signature.
+- Expand the disk module to cover additional signatures and edge cases.
 - Add an ingestion pipeline that SHA-256 hashes files on add and stores hash metadata in Supabase.
 - Wire a simple React subscription hook to display new artifacts in realtime.
 
