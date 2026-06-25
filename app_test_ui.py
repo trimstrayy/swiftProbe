@@ -8,10 +8,22 @@ orchestration against the evidence pipeline.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict
 
 import streamlit as st
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT_DIR / ".env")
+except Exception:
+    pass
+
 from backend.hasher import hash_file
 from backend.core.supabase_db import get_supabase_client
 from modules.carver import carve_from_image
@@ -92,13 +104,17 @@ def main():
 
     st.sidebar.title("SwiftProbe Test Runner")
     case_id = st.sidebar.text_input("Active Case ID", value="CASE-2026-NIST-01")
-    image_path = st.sidebar.text_input("Path to Raw Forensic Image", value="evidence/L0_Graphic.dd")
+    image_path = st.sidebar.text_input("Path to Raw Forensic Image", value="evidence/test_image.raw")
     uploaded_file = st.sidebar.file_uploader(
         "Import forensic file from your device",
         type=["dd", "raw", "img", "bin", "e01"],
     )
 
     supa = get_supabase_client()
+    if supa is None:
+        st.sidebar.error("Supabase is not connected")
+    else:
+        st.sidebar.success("Supabase connected")
 
     active_file_path = Path(image_path)
     if uploaded_file is not None:
