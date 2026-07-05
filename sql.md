@@ -24,7 +24,8 @@ create table if not exists public.files_recovered (
     actual_sha256 char(64) not null,
     physical_offset_bytes bigint not null default 0,
     file_size_bytes bigint not null default 0,
-    match_found boolean not null default false
+    match_found boolean not null default false,
+    is_integrity_verified boolean not null default false
 );
 
 create index if not exists idx_target_artifacts_expected_sha256

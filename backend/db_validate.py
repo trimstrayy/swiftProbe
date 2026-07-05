@@ -13,7 +13,7 @@ from backend.core.supabase_db import get_supabase_client, get_supabase_config
 
 REQUIRED_SCHEMA = {
     "target_artifacts": ["filename", "expected_sha256", "description"],
-    "files_recovered": ["case_id", "filename", "actual_sha256", "physical_offset_bytes", "file_size_bytes", "match_found"],
+    "files_recovered": ["case_id", "filename", "actual_sha256", "physical_offset_bytes", "file_size_bytes", "match_found", "is_integrity_verified"],
 }
 
 

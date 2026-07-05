@@ -8,6 +8,7 @@ orchestration against the evidence pipeline.
 from __future__ import annotations
 
 import os
+import importlib
 import sys
 from pathlib import Path
 from typing import List, Dict
@@ -26,6 +27,7 @@ except Exception:
 
 from backend.hasher import hash_file
 from backend.core.supabase_db import get_supabase_client
+import backend.modules.ram_module as ram_module
 from modules.carver import carve_from_image
 
 
@@ -89,6 +91,23 @@ def safe_stage_orchestrate(file_path: Path, case_id: str):
     return process_evidence_pipeline(str(file_path), case_id)
 
 
+def safe_stage_ram(file_path: Path):
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    module = importlib.reload(ram_module)
+    return module.analyze_ram_dump(str(file_path))
+
+
+def safe_stage_ram_sanity_check(file_path: Path):
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    module = importlib.reload(ram_module)
+    sanity_helper = getattr(module, "sanity_check_ram_capture", None)
+    if callable(sanity_helper):
+        return sanity_helper(str(file_path))
+    return module.RAMModule(str(file_path)).sanity_check()
+
+
 def fetch_recovered(client, case_id: str) -> List[Dict]:
     if client is None:
         return []
@@ -109,6 +128,11 @@ def main():
         "Import forensic file from your device",
         type=["dd", "raw", "img", "bin", "e01"],
     )
+    ram_path = st.sidebar.text_input("Path to RAM Capture", value="evidence/test_memory.raw")
+    ram_uploaded_file = st.sidebar.file_uploader(
+        "Import RAM capture from your device",
+        type=["raw", "mem", "dmp", "vmem", "lime", "aff4", "mddramimage"],
+    )
 
     supa = get_supabase_client()
     if supa is None:
@@ -123,7 +147,14 @@ def main():
 
     st.sidebar.caption(f"Active file: {active_file_path}")
 
-    tab_hash, tab_carve, tab_orchestrate = st.tabs(["Hashing", "File Carving", "Orchestration"])
+    active_ram_path = Path(ram_path)
+    if ram_uploaded_file is not None:
+        active_ram_path = save_uploaded_file(ram_uploaded_file)
+        st.sidebar.success(f"Imported RAM capture: {ram_uploaded_file.name}")
+
+    st.sidebar.caption(f"Active RAM capture: {active_ram_path}")
+
+    tab_hash, tab_carve, tab_orchestrate, tab_ram = st.tabs(["Hashing", "File Carving", "Orchestration", "RAM Analysis"])
 
     with tab_hash:
         left, right = st.columns([1, 1])
@@ -191,6 +222,57 @@ def main():
 
         with col_right:
             render_recovered_feed(supa, case_id)
+
+    with tab_ram:
+        left, right = st.columns([1, 1])
+        with left:
+            st.subheader("Volatile Memory Analysis")
+            st.write("Run Volatility 3 plugins against a RAM capture to extract process and network artifacts.")
+            if st.button("Run RAM Sanity Check", key="ram_sanity_check"):
+                try:
+                    with st.spinner("Checking RAM capture..."):
+                        if not active_ram_path.exists():
+                            raise FileNotFoundError(f"File not found: {active_ram_path}")
+                        sanity_result = safe_stage_ram_sanity_check(active_ram_path)
+                        if sanity_result.get("status") == "pass":
+                            st.success("RAM capture looks valid and Volatility parsed it successfully.")
+                        else:
+                            st.warning("RAM capture does not yet look like a valid memory image.")
+                        st.json(sanity_result)
+                except Exception as exc:
+                    st.exception(exc)
+            if st.button("Analyze RAM Capture", key="ram_analysis"):
+                try:
+                    with st.spinner("Analyzing RAM capture..."):
+                        if not active_ram_path.exists():
+                            raise FileNotFoundError(f"File not found: {active_ram_path}")
+                        ram_result = safe_stage_ram(active_ram_path)
+                        st.success("RAM analysis complete")
+                        st.json(ram_result.get("summary", {}))
+                        warnings = ram_result.get("warnings", [])
+                        if warnings:
+                            st.warning("RAM analysis completed with a limited network view for this capture.")
+                            st.write(
+                                "Volatility could not use the network plugins on this image because it appears to be an older Windows XP-era capture. "
+                                "The process and process-tree results are still valid, but network connections could not be recovered."
+                            )
+                        st.subheader("Process List")
+                        st.dataframe(ram_result.get("processes", []), use_container_width=True, hide_index=True)
+                        st.subheader("Process Tree")
+                        st.dataframe(ram_result.get("process_tree", []), use_container_width=True, hide_index=True)
+                        st.subheader("Network Connections")
+                        st.dataframe(ram_result.get("network_connections", []), use_container_width=True, hide_index=True)
+                        if ram_result.get("network_backend"):
+                            st.caption(f"Network backend used: {ram_result.get('network_backend')}")
+                except Exception as exc:
+                    st.exception(exc)
+        with right:
+            st.subheader("RAM Input Notes")
+            st.info("Use a volatile memory image such as .raw, .mem, .dmp, .vmem, .lime, .aff4, or .mddramimage.")
+            if active_ram_path.exists():
+                st.write(f"Selected RAM capture: {active_ram_path}")
+            else:
+                st.warning("No RAM capture selected or the path does not exist.")
 
 
 if __name__ == "__main__":

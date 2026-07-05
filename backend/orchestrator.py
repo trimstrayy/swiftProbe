@@ -16,6 +16,17 @@ from backend.hasher import hash_file, normalize_sha256
 from backend.core.supabase_db import get_supabase_client
 
 
+def _log_integrity_event(supa, payload: Dict[str, object]) -> None:
+    """Best-effort insert of a pipeline audit row into Supabase."""
+    if supa is None:
+        return
+
+    try:
+        supa.table("files_recovered").insert(payload).execute()
+    except Exception as exc:
+        print("[orchestrator] Failed to insert files_recovered row:", exc)
+
+
 def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
     """Process an evidence image and record recovered files to Supabase.
 
@@ -25,9 +36,10 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
     if not Path(image_path).exists():
         raise FileNotFoundError(f"Evidence image not found: {image_path}")
 
-    print(f"[orchestrator] Hashing source image: {image_path}")
-    img_meta = hash_file(image_path)
-    print(f"[orchestrator] Source image SHA256: {img_meta.get('hash')}")
+    print(f"[orchestrator] Hashing source image before carving: {image_path}")
+    pre_carve_meta = hash_file(image_path)
+    pre_carve_hash = normalize_sha256(str(pre_carve_meta.get("hash", "")))
+    print(f"[orchestrator] Pre-carve source image SHA256: {pre_carve_hash}")
 
     supa = get_supabase_client()
     target_set = set()
@@ -54,6 +66,25 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
     except Exception as exc:
         print("[orchestrator] Carver failed:", exc)
         carved_meta = []
+
+    print(f"[orchestrator] Re-hashing source image after carving: {image_path}")
+    post_carve_meta = hash_file(image_path)
+    post_carve_hash = normalize_sha256(str(post_carve_meta.get("hash", "")))
+    print(f"[orchestrator] Post-carve source image SHA256: {post_carve_hash}")
+
+    if pre_carve_hash != post_carve_hash:
+        integrity_payload = {
+            "case_id": case_id,
+            "filename": Path(image_path).name,
+            "actual_sha256": post_carve_hash,
+            "physical_offset_bytes": 0,
+            "file_size_bytes": int(post_carve_meta.get("size", 0)),
+            "match_found": False,
+            "is_integrity_verified": False,
+            "error_message": "Evidence Contaminated During Processing",
+        }
+        _log_integrity_event(supa, integrity_payload)
+        raise RuntimeError("Evidence Contaminated During Processing")
 
     # Build a path -> metadata mapping for quick lookup
     path_map = {str(Path(m.get("path"))): m for m in carved_meta if m.get("path")}
@@ -83,14 +114,10 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
                     "physical_offset_bytes": int(offset) if offset is not None else 0,
                     "file_size_bytes": int(length) if length is not None else int(fmeta.get("size", 0)),
                     "match_found": bool(match),
+                    "is_integrity_verified": True,
                 }
 
-                # Best-effort insert into Supabase
-                if supa is not None:
-                    try:
-                        supa.table("files_recovered").insert(payload).execute()
-                    except Exception as exc:
-                        print("[orchestrator] Failed to insert files_recovered row:", exc)
+                _log_integrity_event(supa, payload)
 
                 processed.append(payload)
             except Exception as exc:
