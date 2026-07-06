@@ -85,11 +85,15 @@ swiftprobe/
 
 ## Current Repository State
 
-- `built.md` now summarizes the latest cleanup and the currently available modules.
-- `task.md` documents the phased build plan from environment setup through report generation.
+- `built.md` now summarizes the implemented hashing, carving, orchestration, API, and dashboard pieces.
+- `task.md` now documents the completed workflow and proper usage steps.
 - `concept.md` explains the forensic workflow behind disk, memory, log, and timeline analysis.
 - `evidence/DATASETS.md` and `evidence/digitalcorpora/README.md` describe local dataset handling and provenance.
 - `.gitignore` blocks raw evidence binaries and extracted dataset folders from being committed.
+- `backend/orchestrator.py` drives the local hash → carve → compare → persist flow.
+- `backend/app.py` exposes the Flask API used by the frontend dashboard.
+- `frontend/src/App.jsx` renders the browser dashboard for pipeline execution, file upload, and review.
+- `frontend/src/services/pipelineApi.js` contains the dashboard API helpers.
 
 ## Core Capabilities
 

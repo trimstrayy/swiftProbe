@@ -54,7 +54,7 @@ SwiftProbe is a forensic toolkit that ingests and analyzes evidence from multipl
 
 ## Quick NEXT STEPS (suggested)
 
-- Expand the disk module to cover additional signatures and edge cases.
-- Add an ingestion pipeline that SHA-256 hashes files on add and stores hash metadata in Supabase.
-- Wire a simple React subscription hook to display new artifacts in realtime.
+- Expose the evidence pipeline through Flask endpoints so the frontend can trigger and inspect runs.
+- Replace the local-only test flow with dashboard views for target hashes, recovered files, and match status.
+- After the API layer is stable, expand the disk module to cover additional signatures and edge cases.
 

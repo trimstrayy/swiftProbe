@@ -7,14 +7,4 @@ frontend/dist/
 venv/
 venv*/
 **/__pycache__/
-evidence/*.dd
-evidence/*.raw
-evidence/*.img
-evidence/*.E01
-evidence/*.dmp
-evidence/*.mem
-evidence/*.evtx
-evidence/downloads/
-evidence/raw_images/
-evidence/memory_dumps/
-evidence/logs/
+evidence/
