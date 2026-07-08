@@ -205,7 +205,7 @@ export default function App() {
   const [targets, setTargets] = useState([])
   const [recovered, setRecovered] = useState([])
   const [pipeline, setPipeline] = useState(null)
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useState('carver')
   const [activeStage, setActiveStage] = useState('idle')
   const [completedStages, setCompletedStages] = useState([])
   const [runLog, setRunLog] = useState([])
@@ -220,6 +220,9 @@ export default function App() {
     { id: 'orchestrating', label: 'Orchestrating', description: 'Recovered files are hashed, matched, and synced.' },
     { id: 'complete', label: 'Complete', description: 'Results are ready and the dashboard refreshes.' },
   ]
+
+  const tabClasses = (tabName) =>
+    `rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === tabName ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`
 
   const logStage = (message) => {
     setRunLog((current) => [...current, { time: new Date().toLocaleTimeString(), message }])
@@ -254,7 +257,7 @@ export default function App() {
       setTargets(targetsJson.items ?? [])
       setRecovered(recoveredJson.items ?? [])
     } catch (error) {
-      setStatus({ ok: false, error: error.message })
+      setStatus({ ok: false, backend_unreachable: true, error: error.message })
     } finally {
       setLoading(false)
     }
@@ -309,7 +312,11 @@ export default function App() {
     }
   }
 
-  const statusText = status?.supabase_configured ? 'Supabase configured' : 'Supabase not configured'
+  const statusText = status?.backend_unreachable
+    ? 'Backend unavailable'
+    : status?.supabase_configured
+      ? 'Supabase configured'
+      : 'Supabase not configured'
 
   const handleFileChange = (event) => {
     const file = event.target.files?.[0] ?? null
@@ -330,7 +337,11 @@ export default function App() {
               </p>
             </div>
             <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-              {loading ? 'Refreshing dashboard…' : statusText}
+              {loading
+                ? 'Refreshing dashboard…'
+                : status?.backend_unreachable
+                  ? 'Backend unavailable'
+                  : statusText}
             </div>
           </div>
         </header>
@@ -338,21 +349,28 @@ export default function App() {
         <section className="flex flex-wrap gap-3 rounded-3xl border border-white/10 bg-slate-950/70 p-3 shadow-2xl">
           <button
             type="button"
-            onClick={() => setActiveTab('overview')}
-            className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === 'overview' ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}
+            onClick={() => setActiveTab('carver')}
+            className={tabClasses('carver')}
           >
-            Overview
+            File Carver and Orchestration
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('runner')}
-            className={`rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === 'runner' ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}
+            onClick={() => setActiveTab('ram')}
+            className={tabClasses('ram')}
           >
-            Pipeline Run
+            RAM Module
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('log')}
+            className={tabClasses('log')}
+          >
+            Log Module
           </button>
         </section>
 
-        {activeTab === 'overview' ? (
+        {activeTab === 'carver' ? (
           <>
             <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {metrics.map((metric) => (
@@ -442,8 +460,6 @@ export default function App() {
                 ) : null}
               </form>
 
-              <LogIntelligencePanel logAnalysis={logAnalysis} />
-
               <section className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
                 <h2 className="text-2xl font-semibold text-white">Operational guidance</h2>
                 <div className="mt-4 space-y-4 text-sm leading-7 text-slate-300">
@@ -454,7 +470,13 @@ export default function App() {
                 </div>
                 <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
                   <p className="font-medium text-white">Current status</p>
-                  <p className="mt-2">{status?.status ? `Backend status: ${status.status}` : 'Waiting for backend status'}</p>
+                  <p className="mt-2">
+                    {status?.backend_unreachable
+                      ? `Backend unavailable: ${status.error}`
+                      : status?.status
+                        ? `Backend status: ${status.status}`
+                        : 'Waiting for backend status'}
+                  </p>
                   <p className="mt-1">{status?.target_artifacts_count ?? 0} target hashes available</p>
                   <p className="mt-1">{status?.files_recovered_count ?? 0} recovered rows available</p>
                 </div>
@@ -474,125 +496,74 @@ export default function App() {
               />
             </section>
           </>
+        ) : activeTab === 'ram' ? (
+          <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-10 shadow-2xl">
+            <div className="max-w-3xl">
+              <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">RAM module</p>
+              <h2 className="mt-3 text-3xl font-semibold text-white">Reserved for volatile-memory analysis</h2>
+              <p className="mt-4 text-sm leading-7 text-slate-400">
+                This section is intentionally blank for now so the RAM module can be added separately without changing the file-carver or log workflows.
+              </p>
+            </div>
+          </section>
         ) : (
           <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
             <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Live execution</p>
-                  <h2 className="mt-2 text-3xl font-semibold text-white">Pipeline runner</h2>
+                  <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log module</p>
+                  <h2 className="mt-2 text-3xl font-semibold text-white">File metadata and device activity</h2>
                   <p className="mt-2 text-sm text-slate-400">
-                    This tab opens automatically when you click Run Pipeline and shows the run phases visually.
+                    This tab reflects the current upload analysis: file metadata, EVTX parsing, USB connection detection, and file-transfer hints.
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('overview')}
+                  onClick={() => setActiveTab('carver')}
                   className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
                 >
-                  Back to Overview
+                  Open File Carver
                 </button>
               </div>
 
-              <div className="mt-6 grid gap-3">
-                {stages.map((stage) => (
-                  <StagePill
-                    key={stage.id}
-                    stage={stage}
-                    activeStage={activeStage}
-                    completedStages={completedStages}
-                    failed={Boolean(pipeline?.ok === false && pipeline?.error)}
-                  />
-                ))}
+              <div className="mt-6 grid gap-3 md:grid-cols-3">
+                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Metadata</p>
+                  <p className="mt-2 text-sm text-slate-200">File hash, timestamps, MIME, and upload details.</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">USB trace</p>
+                  <p className="mt-2 text-sm text-slate-200">Event-log search for removable-device connection activity.</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Transfer trace</p>
+                  <p className="mt-2 text-sm text-slate-200">Event-log search for file transfer or copy initialization.</p>
+                </div>
               </div>
 
-              <div className="mt-6 rounded-[1.5rem] border border-white/10 bg-white/5 p-5">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.35em] text-slate-400">Current action</p>
-                    <p className="mt-2 text-lg font-semibold text-white">
-                      {running ? (selectedFile ? 'Uploading and processing the selected evidence file' : 'Processing the evidence image path') : 'Ready to run a new pipeline'}
-                    </p>
-                  </div>
-                  <div className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-4 py-2 text-sm text-cyan-100">
-                    {running ? 'Running' : pipeline?.ok ? 'Completed' : 'Idle'}
-                  </div>
-                </div>
+              <div className="mt-6 space-y-3 text-sm text-slate-300">
+                <p>Use the file-carver tab to upload a sample and refresh this analysis payload.</p>
+                <p>The backend log module is already connected to the pipeline response, so this view updates from the latest run.</p>
+              </div>
+            </div>
 
-                <div className="mt-5 grid gap-3 md:grid-cols-3">
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Hashing</p>
-                    <p className="mt-2 text-sm text-slate-200">Source image integrity check before extraction.</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Carver</p>
-                    <p className="mt-2 text-sm text-slate-200">Signature-based recovery of JPG, PNG, PDF, and ZIP fragments.</p>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                    <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Orchestrator</p>
-                    <p className="mt-2 text-sm text-slate-200">Target comparison and best-effort database synchronization.</p>
-                  </div>
-                </div>
+            <LogIntelligencePanel logAnalysis={logAnalysis} />
 
-                {pipeline ? (
-                  <div className={`mt-5 rounded-2xl border p-4 ${pipeline.ok ? 'border-emerald-400/20 bg-emerald-500/10' : 'border-rose-400/20 bg-rose-500/10'}`}>
-                    <p className="text-sm uppercase tracking-[0.35em] text-slate-300">Latest pipeline result</p>
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      <div>
-                        <p className="text-xs text-slate-400">Total carved</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.total_files_carved ?? 0}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-400">Matches found</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.total_matches_found ?? 0}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-400">Sync status</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.database_sync_status ?? 'unknown'}</p>
-                      </div>
+            <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
+              <h3 className="text-lg font-semibold text-white">Run log</h3>
+              <div className="mt-4 space-y-3">
+                {runLog.length ? (
+                  runLog.map((entry, index) => (
+                    <div key={`${entry.time}-${index}`} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
+                      <p className="mt-1">{entry.message}</p>
                     </div>
-                    {pipeline.source_image_hash ? (
-                      <div className="mt-4 grid gap-2 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
-                        <p><span className="text-slate-400">Source hash:</span> {pipeline.source_image_hash}</p>
-                        <p><span className="text-slate-400">Source size:</span> {Number(pipeline.source_image_size ?? 0).toLocaleString()} bytes</p>
-                        {pipeline.stored_path ? <p><span className="text-slate-400">Saved upload:</span> {pipeline.stored_path}</p> : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-400">No run events yet. Use the File Carver tab to run the pipeline and populate the log module.</p>
+                )}
               </div>
-            </div>
-
-            <div className="space-y-6">
-              <LogIntelligencePanel logAnalysis={logAnalysis} />
-
-              <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
-                <h3 className="text-lg font-semibold text-white">Run log</h3>
-                <div className="mt-4 space-y-3">
-                  {runLog.length ? (
-                    runLog.map((entry, index) => (
-                      <div key={`${entry.time}-${index}`} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
-                        <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
-                        <p className="mt-1">{entry.message}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-sm text-slate-400">No run events yet. Click Run Pipeline to begin.</p>
-                  )}
-                </div>
-              </section>
-
-              <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
-                <h3 className="text-lg font-semibold text-white">Functional coverage</h3>
-                <div className="mt-4 space-y-3 text-sm text-slate-300">
-                  <p>• File input and upload handling.</p>
-                  <p>• Evidence hashing and integrity checks.</p>
-                  <p>• Carver execution and carved file generation.</p>
-                  <p>• Orchestrator matching and database sync.</p>
-                  <p>• Visual result review in the browser.</p>
-                </div>
-              </section>
-            </div>
+            </section>
           </section>
         )}
       </div>

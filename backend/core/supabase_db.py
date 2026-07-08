@@ -1,10 +1,35 @@
 import os
+from pathlib import Path
+
+
+def _load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
 except Exception:
-    pass
+    load_dotenv = None
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if load_dotenv is not None:
+    load_dotenv(ROOT_DIR / ".env", override=False)
+    load_dotenv(ROOT_DIR / "backend" / ".env", override=False)
+else:
+    _load_env_file(ROOT_DIR / ".env")
+    _load_env_file(ROOT_DIR / "backend" / ".env")
 
 try:
     from supabase import create_client

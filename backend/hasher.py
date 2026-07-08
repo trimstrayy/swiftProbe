@@ -96,6 +96,26 @@ def upload_to_supabase(metadata: Dict[str, object]) -> Optional[Dict]:
         return None
 
 
+def store_file_operation(operation: Dict[str, object]) -> Optional[Dict]:
+    """Store a full file-operation record in Supabase.
+
+    The payload is expected to include JSON-serializable detail fields so the
+    database can retain the source file, carved output, and any analysis data.
+    """
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    if not url or not key:
+        return None
+
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        return client.table("file_operations").insert(operation).execute()
+    except Exception:
+        return None
+
+
 def fetch_target_hashes() -> set[str]:
     """Fetch known target hashes from Supabase.
 
