@@ -2,10 +2,11 @@
 
 Run this whole script in the Supabase SQL editor for a fresh database.
 
-It creates the two required tables used by the current pipeline:
+It creates the required tables used by the current pipeline:
 
 - `target_artifacts`
 - `files_recovered`
+- `file_operations`
 
 It also enables row level security and adds permissive policies for testing with the publishable key.
 
@@ -24,7 +25,33 @@ create table if not exists public.files_recovered (
     actual_sha256 char(64) not null,
     physical_offset_bytes bigint not null default 0,
     file_size_bytes bigint not null default 0,
-    match_found boolean not null default false
+    match_found boolean not null default false,
+    source_image_path text,
+    source_image_sha256 char(64),
+    source_image_size bigint,
+    source_image_mtime text,
+    carved_file_path text,
+    carved_file_type text,
+    carved_metadata_json jsonb,
+    source_metadata_json jsonb
+);
+
+create table if not exists public.file_operations (
+    id bigserial primary key,
+    case_id text not null,
+    operation_type text not null,
+    source_image_path text not null,
+    source_image_name text,
+    source_image_sha256 char(64),
+    source_image_size bigint,
+    source_image_mtime text,
+    output_dir text,
+    carved_file_count bigint not null default 0,
+    matched_file_count bigint not null default 0,
+    source_metadata jsonb not null default '{}'::jsonb,
+    carved_output jsonb not null default '[]'::jsonb,
+    recovered_files jsonb not null default '[]'::jsonb,
+    created_at timestamptz not null default now()
 );
 
 create index if not exists idx_target_artifacts_expected_sha256
@@ -39,8 +66,15 @@ create index if not exists idx_files_recovered_case_id
 create index if not exists idx_files_recovered_actual_sha256
     on public.files_recovered (actual_sha256);
 
+create index if not exists idx_file_operations_case_id
+    on public.file_operations (case_id);
+
+create index if not exists idx_file_operations_source_sha256
+    on public.file_operations (source_image_sha256);
+
 alter table public.target_artifacts enable row level security;
 alter table public.files_recovered enable row level security;
+alter table public.file_operations enable row level security;
 
 do $$
 begin
@@ -54,6 +88,38 @@ begin
         on public.target_artifacts
         for select
         using (true);
+    end if;
+end
+$$;
+
+do $$
+begin
+    if not exists (
+        select 1 from pg_policies
+        where schemaname = 'public'
+          and tablename = 'file_operations'
+          and policyname = 'file_operations_select_all'
+    ) then
+        create policy file_operations_select_all
+        on public.file_operations
+        for select
+        using (true);
+    end if;
+end
+$$;
+
+do $$
+begin
+    if not exists (
+        select 1 from pg_policies
+        where schemaname = 'public'
+          and tablename = 'file_operations'
+          and policyname = 'file_operations_insert_all'
+    ) then
+        create policy file_operations_insert_all
+        on public.file_operations
+        for insert
+        with check (true);
     end if;
 end
 $$;
@@ -117,4 +183,4 @@ SUPABASE_KEY=...
 
 - The SQL is intentionally permissive so you can test quickly with the publishable key.
 - For production, tighten the RLS policies to authenticated users or a service-role backend.
-- The pipeline currently reads from `target_artifacts` and writes to `files_recovered` using the exact column names above.
+- The pipeline currently reads from `target_artifacts` and writes to `files_recovered` and `file_operations` using the exact column names above.
