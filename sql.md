@@ -26,9 +26,7 @@ create table if not exists public.files_recovered (
     physical_offset_bytes bigint not null default 0,
     file_size_bytes bigint not null default 0,
     match_found boolean not null default false,
-<<<<<<< HEAD
-    is_integrity_verified boolean not null default false
-=======
+    is_integrity_verified boolean not null default false,
     source_image_path text,
     source_image_sha256 char(64),
     source_image_size bigint,
@@ -55,7 +53,6 @@ create table if not exists public.file_operations (
     carved_output jsonb not null default '[]'::jsonb,
     recovered_files jsonb not null default '[]'::jsonb,
     created_at timestamptz not null default now()
->>>>>>> 8ea45fae87b25e4c91247daebe70489098d4c75a
 );
 
 create index if not exists idx_target_artifacts_expected_sha256

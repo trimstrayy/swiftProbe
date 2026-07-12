@@ -7,13 +7,14 @@ orchestration against the evidence pipeline.
 """
 from __future__ import annotations
 
-import os
 import importlib
+import os
 import sys
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import streamlit as st
+
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -25,8 +26,8 @@ try:
 except Exception:
     pass
 
-from backend.hasher import hash_file
 from backend.core.supabase_db import get_supabase_client
+from backend.hasher import hash_file
 import backend.modules.ram_module as ram_module
 from modules.carver import carve_from_image
 
@@ -44,7 +45,6 @@ def fetch_targets(client) -> List[Dict]:
 def save_uploaded_file(uploaded_file) -> Path:
     temp_root = Path("evidence") / "uploads"
     temp_root.mkdir(parents=True, exist_ok=True)
-    suffix = Path(uploaded_file.name).suffix or ".bin"
     temp_path = temp_root / f"uploaded_{uploaded_file.name}"
     temp_path.write_bytes(uploaded_file.getbuffer())
     return temp_path
@@ -58,6 +58,22 @@ def render_target_fingerprints(client):
         return []
     st.dataframe(targets, use_container_width=True, hide_index=True)
     return targets
+
+
+def fetch_recovered(client, case_id: str) -> List[Dict]:
+    if client is None:
+        return []
+    try:
+        resp = (
+            client.table("files_recovered")
+            .select("*")
+            .eq("case_id", case_id)
+            .order("physical_offset_bytes", {"ascending": True})
+            .execute()
+        )
+        return getattr(resp, "data", []) or []
+    except Exception:
+        return []
 
 
 def render_recovered_feed(client, case_id: str):
@@ -106,16 +122,6 @@ def safe_stage_ram_sanity_check(file_path: Path):
     if callable(sanity_helper):
         return sanity_helper(str(file_path))
     return module.RAMModule(str(file_path)).sanity_check()
-
-
-def fetch_recovered(client, case_id: str) -> List[Dict]:
-    if client is None:
-        return []
-    try:
-        resp = client.table("files_recovered").select("*").eq("case_id", case_id).order("physical_offset_bytes", {"ascending": True}).execute()
-        return getattr(resp, "data", []) or []
-    except Exception:
-        return []
 
 
 def main():
