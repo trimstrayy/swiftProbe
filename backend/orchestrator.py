@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import List, Dict
 
-from backend.hasher import hash_file, normalize_sha256
+from backend.hasher import hash_file, normalize_sha256, store_file_operation
 from backend.core.supabase_db import get_supabase_client
 
 
@@ -114,14 +114,71 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
                     "physical_offset_bytes": int(offset) if offset is not None else 0,
                     "file_size_bytes": int(length) if length is not None else int(fmeta.get("size", 0)),
                     "match_found": bool(match),
+<<<<<<< HEAD
                     "is_integrity_verified": True,
                 }
 
                 _log_integrity_event(supa, payload)
+=======
+                    "source_image_path": image_path,
+                    "source_image_sha256": img_meta.get("hash"),
+                    "source_image_size": int(img_meta.get("size", 0)),
+                    "source_image_mtime": img_meta.get("mtime"),
+                    "carved_file_path": str(fpath),
+                    "carved_file_type": meta_entry.get("type") if meta_entry else None,
+                    "carved_metadata_json": {
+                        **fmeta,
+                        "offset": int(offset) if offset is not None else 0,
+                        "length": int(length) if length is not None else int(fmeta.get("size", 0)),
+                        "type": meta_entry.get("type") if meta_entry else None,
+                    },
+                }
+
+                # Best-effort insert into Supabase
+                if supa is not None:
+                    try:
+                        supa.table("files_recovered").insert(payload).execute()
+                    except Exception as exc:
+                        print("[orchestrator] Failed to insert detailed files_recovered row:", exc)
+                        fallback_payload = {
+                            "case_id": case_id,
+                            "filename": fname,
+                            "actual_sha256": actual,
+                            "physical_offset_bytes": int(offset) if offset is not None else 0,
+                            "file_size_bytes": int(length) if length is not None else int(fmeta.get("size", 0)),
+                            "match_found": bool(match),
+                        }
+                        try:
+                            supa.table("files_recovered").insert(fallback_payload).execute()
+                        except Exception as fallback_exc:
+                            print("[orchestrator] Failed to insert fallback files_recovered row:", fallback_exc)
+>>>>>>> 8ea45fae87b25e4c91247daebe70489098d4c75a
 
                 processed.append(payload)
             except Exception as exc:
                 print(f"[orchestrator] Failed processing carved file {fpath}:", exc)
+
+    operation_payload = {
+        "case_id": case_id,
+        "operation_type": "pipeline_run",
+        "source_image_path": image_path,
+        "source_image_name": img_meta.get("filename"),
+        "source_image_sha256": img_meta.get("hash"),
+        "source_image_size": int(img_meta.get("size", 0)),
+        "source_image_mtime": img_meta.get("mtime"),
+        "output_dir": str(outdir),
+        "carved_file_count": len(carved_meta),
+        "matched_file_count": len([row for row in processed if row.get("match_found")]),
+        "source_metadata": img_meta,
+        "carved_output": carved_meta,
+        "recovered_files": processed,
+    }
+
+    if supa is not None:
+        try:
+            store_file_operation(operation_payload)
+        except Exception as exc:
+            print("[orchestrator] Failed to store file operation record:", exc)
 
     print(f"[orchestrator] Pipeline complete. Processed {len(processed)} carved items.")
     return processed

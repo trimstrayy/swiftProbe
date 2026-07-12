@@ -61,10 +61,9 @@ def store_target_artifact(target_hash: str, label: Optional[str] = None, case_id
 
         client = create_client(url, key)
         payload = {
-            "sha256": normalize_sha256(target_hash),
-            "label": label,
-            "case_id": case_id,
-            "match_found": False,
+            "expected_sha256": normalize_sha256(target_hash),
+            "filename": label or "target_artifact",
+            "description": case_id,
         }
         return client.table("target_artifacts").insert(payload).execute()
     except Exception:
@@ -97,6 +96,26 @@ def upload_to_supabase(metadata: Dict[str, object]) -> Optional[Dict]:
         return None
 
 
+def store_file_operation(operation: Dict[str, object]) -> Optional[Dict]:
+    """Store a full file-operation record in Supabase.
+
+    The payload is expected to include JSON-serializable detail fields so the
+    database can retain the source file, carved output, and any analysis data.
+    """
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    if not url or not key:
+        return None
+
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        return client.table("file_operations").insert(operation).execute()
+    except Exception:
+        return None
+
+
 def fetch_target_hashes() -> set[str]:
     """Fetch known target hashes from Supabase.
 
@@ -111,9 +130,13 @@ def fetch_target_hashes() -> set[str]:
         from supabase import create_client
 
         client = create_client(url, key)
-        response = client.table("target_artifacts").select("sha256").execute()
+        response = client.table("target_artifacts").select("expected_sha256,sha256").execute()
         rows = getattr(response, "data", []) or []
-        return {normalize_sha256(row["sha256"]) for row in rows if row.get("sha256")}
+        return {
+            normalize_sha256(row["expected_sha256"] or row["sha256"])
+            for row in rows
+            if row.get("expected_sha256") or row.get("sha256")
+        }
     except Exception:
         return set()
 
@@ -141,7 +164,7 @@ def mark_target_match(target_hash: str, carved_hash: str, filename: str, offset:
                     "matched_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
-            .eq("sha256", normalize_sha256(target_hash))
+            .eq("expected_sha256", normalize_sha256(target_hash))
             .execute()
         )
     except Exception:

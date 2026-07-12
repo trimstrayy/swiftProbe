@@ -13,7 +13,41 @@ from backend.core.supabase_db import get_supabase_client, get_supabase_config
 
 REQUIRED_SCHEMA = {
     "target_artifacts": ["filename", "expected_sha256", "description"],
+<<<<<<< HEAD
     "files_recovered": ["case_id", "filename", "actual_sha256", "physical_offset_bytes", "file_size_bytes", "match_found", "is_integrity_verified"],
+=======
+    "files_recovered": [
+        "case_id",
+        "filename",
+        "actual_sha256",
+        "physical_offset_bytes",
+        "file_size_bytes",
+        "match_found",
+        "source_image_path",
+        "source_image_sha256",
+        "source_image_size",
+        "source_image_mtime",
+        "carved_file_path",
+        "carved_file_type",
+        "carved_metadata_json",
+        "source_metadata_json",
+    ],
+    "file_operations": [
+        "case_id",
+        "operation_type",
+        "source_image_path",
+        "source_image_name",
+        "source_image_sha256",
+        "source_image_size",
+        "source_image_mtime",
+        "output_dir",
+        "carved_file_count",
+        "matched_file_count",
+        "source_metadata",
+        "carved_output",
+        "recovered_files",
+    ],
+>>>>>>> 8ea45fae87b25e4c91247daebe70489098d4c75a
 }
 
 
