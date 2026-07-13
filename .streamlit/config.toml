@@ -1,0 +1,4 @@
+[server]
+# Allow large forensic uploads such as RAM images around 510 MB.
+maxUploadSize = 1024
+maxMessageSize = 1024

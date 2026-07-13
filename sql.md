@@ -26,6 +26,7 @@ create table if not exists public.files_recovered (
     physical_offset_bytes bigint not null default 0,
     file_size_bytes bigint not null default 0,
     match_found boolean not null default false,
+    is_integrity_verified boolean not null default false,
     source_image_path text,
     source_image_sha256 char(64),
     source_image_size bigint,
