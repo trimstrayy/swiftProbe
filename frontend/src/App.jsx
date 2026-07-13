@@ -86,9 +86,16 @@ function LogIntelligencePanel({ logAnalysis }) {
 
   const fileMetadata = logAnalysis.file_metadata ?? {}
   const eventScan = logAnalysis.event_log_scan ?? {}
+  const analysisFailed = logAnalysis.ok === false
+  const analysisError = logAnalysis.error ?? ''
   const usbRows = summarizeEvents(eventScan.usb_connection_events)
   const transferRows = summarizeEvents(eventScan.file_transfer_events)
   const uploadedRows = summarizeEvents(logAnalysis.uploaded_events)
+  const hasNoDetectedEvents =
+    !analysisFailed &&
+    (eventScan.event_count ?? 0) === 0 &&
+    (eventScan.usb_connection_count ?? 0) === 0 &&
+    (eventScan.file_transfer_count ?? 0) === 0
 
   return (
     <section className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
@@ -97,8 +104,10 @@ function LogIntelligencePanel({ logAnalysis }) {
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log intelligence</p>
           <h2 className="mt-2 text-2xl font-semibold text-white">File metadata and device activity</h2>
         </div>
-        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-          {logAnalysis.error ? 'Log analysis fallback used' : 'Log analysis ready'}
+        <div
+          className={`rounded-2xl px-4 py-3 text-sm ${analysisFailed ? 'border border-rose-400/30 bg-rose-500/15 text-rose-100' : 'border border-cyan-300/20 bg-cyan-300/10 text-cyan-100'}`}
+        >
+          {analysisFailed ? 'Log analysis failed' : 'Log analysis ready'}
         </div>
       </div>
 
@@ -146,7 +155,10 @@ function LogIntelligencePanel({ logAnalysis }) {
             <p><span className="text-slate-400">Transfer matches:</span> {eventScan.file_transfer_count ?? 0}</p>
             <p><span className="text-slate-400">Case ID:</span> {logAnalysis.case_id ?? 'n/a'}</p>
           </div>
-          {logAnalysis.error ? <p className="mt-3 text-rose-100">{logAnalysis.error}</p> : null}
+          {analysisFailed ? <p className="mt-3 text-rose-100">{analysisError}</p> : null}
+          {hasNoDetectedEvents ? (
+            <p className="mt-3 text-slate-400">No USB, transfer, registry, prefetch, or browser-history events were found in this run.</p>
+          ) : null}
         </div>
       </div>
 
@@ -453,6 +465,7 @@ export default function App() {
                         <p><span className="text-slate-400">Source hash:</span> {pipeline.source_image_hash}</p>
                         <p><span className="text-slate-400">Source size:</span> {Number(pipeline.source_image_size ?? 0).toLocaleString()} bytes</p>
                         {pipeline.stored_path ? <p><span className="text-slate-400">Saved upload:</span> {pipeline.stored_path}</p> : null}
+                        {pipeline.log_analysis_ok === false ? <p className="text-rose-100">Log analysis failed: {pipeline.log_analysis_error ?? 'Unknown error'}</p> : null}
                       </div>
                     ) : null}
                     {pipeline.error ? <p className="mt-4 text-sm text-rose-100">{pipeline.error}</p> : null}

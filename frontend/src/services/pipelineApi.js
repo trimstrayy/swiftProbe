@@ -1,11 +1,22 @@
 async function parseJson(response) {
-  const payload = await response.json()
+  const rawText = await response.text()
+  let payload = null
+
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText)
+    } catch (error) {
+      const fallbackMessage = rawText.slice(0, 240) || `Request failed with status ${response.status}`
+      throw new Error(fallbackMessage)
+    }
+  }
+
   if (!response.ok) {
-    const message = payload?.error || `Request failed with status ${response.status}`
+    const message = payload?.error || rawText || `Request failed with status ${response.status}`
     throw new Error(message)
   }
 
-  return payload
+  return payload ?? {}
 }
 
 export async function fetchStatus() {

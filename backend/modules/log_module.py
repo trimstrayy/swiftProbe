@@ -1,16 +1,21 @@
-"""Windows log analysis helpers for SwiftProbe.
+"""Windows artifact analysis helpers for SwiftProbe.
 
-This module performs best-effort forensic log analysis for Windows event logs.
-It extracts file metadata, parses EVTX/XML logs, classifies USB and file
-transfer activity, attempts user attribution from common event fields, and can
-persist complete analysis runs to Supabase.
+This module performs best-effort forensic analysis for Windows event logs,
+registry hives, prefetch files, and browser history databases. It extracts
+file metadata, reconstructs a master timeline, classifies USB, clipboard, and
+file transfer activity, attempts user attribution from common event fields,
+and can persist complete analysis runs to Supabase.
 """
 from __future__ import annotations
 
+import logging
 import json
 import mimetypes
 import os
 import re
+import shutil
+import sqlite3
+import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import dataclass
@@ -19,6 +24,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from backend.core.supabase_db import get_supabase_client
 from backend.hasher import hash_file, normalize_sha256
+
+logger = logging.getLogger(__name__)
 
 
 WINDOWS_DEFAULT_LOG_PATHS = (
@@ -29,6 +36,54 @@ WINDOWS_DEFAULT_LOG_PATHS = (
     "System32/winevt/Logs/Microsoft-Windows-UserPnp%4DeviceInstall.evtx",
     "System32/winevt/Logs/Microsoft-Windows-USB-USBHUB3%4Operational.evtx",
     "System32/winevt/Logs/Microsoft-Windows-Partition%4Diagnostic.evtx",
+)
+
+WINDOWS_DEFAULT_ARTIFACT_PATHS = WINDOWS_DEFAULT_LOG_PATHS
+
+REGISTRY_HIVE_NAMES = {
+    "ntuser.dat",
+    "usrclass.dat",
+    "system",
+    "software",
+    "sam",
+    "security",
+    "default",
+}
+
+REGISTRY_HINT_KEYS = (
+    r"software\microsoft\windows\currentversion\explorer\runmru",
+    r"software\microsoft\windows\currentversion\explorer\typedpaths",
+    r"software\microsoft\windows\currentversion\explorer\typedurls",
+    r"software\microsoft\windows\currentversion\explorer\recentdocs",
+    r"software\microsoft\windows\currentversion\explorer\comdlg32",
+    r"controlset",
+    r"usbstor",
+    r"mounteddevices",
+    r"usb",
+)
+
+PREFETCH_EXTENSIONS = {".pf"}
+
+BROWSER_HISTORY_NAMES = {
+    "history",
+    "places.sqlite",
+    "webcachev01.dat",
+    "webcachev24.dat",
+    "history.db",
+    "history.sqlite",
+    "visited links.db",
+    "visitedlinks",
+}
+
+BROWSER_HISTORY_EXTENSIONS = {".sqlite", ".db", ".sqlite3"}
+
+CLIPBOARD_KEYWORDS = (
+    "clipboard",
+    "copy",
+    "copied",
+    "paste",
+    "pasted",
+    "cut",
 )
 
 USB_PROVIDER_HINTS = (
@@ -70,6 +125,11 @@ TRANSFER_KEYWORDS = (
     "completed",
     "success",
     "finished",
+    "download",
+    "upload",
+    "clipboard",
+    "paste",
+    "pasted",
 )
 
 USER_FIELD_NAMES = (
@@ -338,6 +398,11 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
         indicators.append("keyword:usb")
         confidence = max(confidence, 0.75)
 
+    if any(keyword in text for keyword in CLIPBOARD_KEYWORDS):
+        tags.append("clipboard")
+        indicators.append("keyword:clipboard")
+        confidence = max(confidence, 0.7)
+
     if any(keyword in text for keyword in TRANSFER_KEYWORDS):
         tags.append("file_transfer")
         indicators.append("keyword:transfer")
@@ -379,6 +444,14 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
     elif "file_transfer" in tags:
         activity_type = "file_transfer_initiated"
         activity_stage = "initiated"
+        confidence = max(confidence, 0.8)
+    elif "clipboard" in tags and any(token in text for token in ("paste", "pasted")):
+        activity_type = "clipboard_paste"
+        activity_stage = "observed"
+        confidence = max(confidence, 0.8)
+    elif "clipboard" in tags and any(token in text for token in ("copy", "copied", "cut")):
+        activity_type = "clipboard_copy"
+        activity_stage = "observed"
         confidence = max(confidence, 0.8)
     elif "usb" in tags:
         activity_type = "usb_activity"
@@ -447,6 +520,526 @@ def _event_sort_key(event: Dict[str, Any]) -> Tuple[str, int]:
 
 def _select_events(events: Sequence[Dict[str, Any]], predicate) -> List[Dict[str, Any]]:
     return [event for event in events if predicate(event)]
+
+
+def _iter_default_artifact_paths() -> List[str]:
+    windows_root = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    return [str(windows_root / path) for path in WINDOWS_DEFAULT_ARTIFACT_PATHS if (windows_root / path).exists()]
+
+
+def _is_registry_hive(path: Path) -> bool:
+    lower_name = path.name.lower()
+    return lower_name in REGISTRY_HIVE_NAMES or lower_name.endswith(".hive") or lower_name.endswith(".reg")
+
+
+def _is_prefetch_file(path: Path) -> bool:
+    return path.suffix.lower() in PREFETCH_EXTENSIONS
+
+
+def _is_browser_history_file(path: Path) -> bool:
+    lower_name = path.name.lower()
+    if lower_name in BROWSER_HISTORY_NAMES:
+        return True
+    if lower_name.endswith("history") or lower_name.endswith("history.db") or lower_name.endswith("history.sqlite"):
+        return True
+    return path.suffix.lower() in BROWSER_HISTORY_EXTENSIONS and (
+        "history" in lower_name or "places" in lower_name or "webcache" in lower_name
+    )
+
+
+def _artifact_source_kind(path: Path) -> str:
+    if path.suffix.lower() in {".evtx", ".xml"}:
+        return "event_log"
+    if _is_registry_hive(path):
+        return "registry_hive"
+    if _is_prefetch_file(path):
+        return "prefetch"
+    if _is_browser_history_file(path):
+        return "browser_history"
+    return "unknown"
+
+
+def _read_binary(path: Path) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read()
+
+
+def _extract_strings_from_bytes(data: bytes, minimum_length: int = 4) -> List[str]:
+    ascii_matches = re.findall(rb"[ -~]{%d,}" % minimum_length, data)
+    utf16_matches = re.findall((rb"(?:[ -~]\x00){%d,}" % minimum_length), data)
+
+    results = [match.decode("ascii", errors="ignore").strip() for match in ascii_matches]
+    for match in utf16_matches:
+        try:
+            results.append(match.decode("utf-16le", errors="ignore").strip())
+        except Exception:
+            continue
+
+    unique_results: List[str] = []
+    seen = set()
+    for value in results:
+        cleaned = value.strip("\x00\t\r\n ")
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique_results.append(cleaned)
+    return unique_results
+
+
+def _temp_copy_for_sqlite(path: Path) -> Path:
+    temp_handle = tempfile.NamedTemporaryFile(prefix="swiftprobe_history_", suffix=path.suffix, delete=False)
+    temp_handle.close()
+    shutil.copy2(path, temp_handle.name)
+    return Path(temp_handle.name)
+
+
+def _chrome_time_to_iso(value: Optional[int]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=int(value))).isoformat()
+    except Exception:
+        return None
+
+
+def _unix_time_to_iso(value: Optional[int]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        if value > 10**15:
+            value = int(value / 1000000)
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _registry_value_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="ignore")
+        except Exception:
+            return repr(value)
+    if isinstance(value, (list, tuple, set)):
+        return "; ".join(_registry_value_to_text(item) for item in value if item is not None)
+    return str(value)
+
+
+def prefetched_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except Exception:
+        return 0
+
+
+def _registry_extract_records(hive_path: Path) -> List[Dict[str, Any]]:
+    try:
+        from Registry import Registry
+    except Exception:
+        return []
+
+    try:
+        registry = Registry.Registry(str(hive_path))
+    except Exception:
+        return []
+
+    records: List[Dict[str, Any]] = []
+
+    def walk(key) -> None:
+        try:
+            key_name = key.path().lower()
+        except Exception:
+            key_name = ""
+
+        if key_name:
+            try:
+                values = {value.name(): _registry_value_to_text(value.value()) for value in key.values()}
+            except Exception:
+                values = {}
+
+            if any(hint in key_name for hint in REGISTRY_HINT_KEYS):
+                activity_type = "registry_activity"
+                activity_stage = "observed"
+                if "usbstor" in key_name or "mounteddevices" in key_name:
+                    activity_type = "usb_plugin_detected"
+                    activity_stage = "detected"
+                elif "runmru" in key_name or "typedpaths" in key_name or "typedurls" in key_name:
+                    activity_type = "user_activity"
+                elif "recentdocs" in key_name or "comdlg32" in key_name:
+                    activity_type = "file_access_activity"
+
+                records.append(
+                    {
+                        "log_path": str(hive_path),
+                        "source_kind": "registry_hive",
+                        "record_index": len(records),
+                        "event_id": None,
+                        "record_id": None,
+                        "provider": "registry",
+                        "channel": None,
+                        "computer": None,
+                        "level": None,
+                        "task": None,
+                        "opcode": None,
+                        "keywords": None,
+                        "timestamp": None,
+                        "user_context": {
+                            "user_name": None,
+                            "user_domain": None,
+                            "user_sid": None,
+                            "logon_id": None,
+                            "process_name": None,
+                            "user_summary": None,
+                        },
+                        "user_name": None,
+                        "user_domain": None,
+                        "user_sid": None,
+                        "logon_id": None,
+                        "process_name": None,
+                        "activity_type": activity_type,
+                        "activity_stage": activity_stage,
+                        "activity_tags": ["registry", activity_type],
+                        "confidence": 0.7,
+                        "indicators": [f"key:{key_name}"] + [f"value:{name}" for name in values.keys()],
+                        "summary": f"Registry artifact: {key_name}",
+                        "event_data": values,
+                        "user_data": {},
+                        "system_data": {"key_path": key_name, "value_count": len(values)},
+                        "raw_xml": None,
+                    }
+                )
+
+        try:
+            for child in key.subkeys():
+                walk(child)
+        except Exception:
+            return
+
+    try:
+        walk(registry.root())
+    except Exception:
+        return []
+
+    return records
+
+
+def _prefetch_extract_records(prefetch_path: Path) -> List[Dict[str, Any]]:
+    try:
+        data = _read_binary(prefetch_path)
+    except Exception:
+        return []
+
+    strings = _extract_strings_from_bytes(data)
+    signature = data[:4].decode("ascii", errors="ignore") if len(data) >= 4 else None
+    version = int.from_bytes(data[4:8], "little") if len(data) >= 8 else None
+    executable_name = None
+    for value in strings:
+        lower_value = value.lower()
+        if lower_value.endswith(".exe") or lower_value.endswith(".dll") or lower_value.endswith(".bat") or lower_value.endswith(".ps1"):
+            executable_name = Path(value).name
+            break
+
+    if executable_name is None and strings:
+        executable_name = Path(strings[0]).name
+
+    summary = f"Prefetch artifact: {executable_name or prefetch_path.name}"
+    indicators = ["artifact:prefetch", f"strings:{min(len(strings), 20)}"]
+    if executable_name:
+        indicators.append(f"executable:{executable_name}")
+
+    return [
+        {
+            "log_path": str(prefetch_path),
+            "source_kind": "prefetch",
+            "record_index": 0,
+            "event_id": None,
+            "record_id": None,
+            "provider": "prefetch",
+            "channel": None,
+            "computer": None,
+            "level": None,
+            "task": None,
+            "opcode": None,
+            "keywords": None,
+            "timestamp": None,
+            "user_context": {
+                "user_name": None,
+                "user_domain": None,
+                "user_sid": None,
+                "logon_id": None,
+                "process_name": executable_name,
+                "user_summary": None,
+            },
+            "user_name": None,
+            "user_domain": None,
+            "user_sid": None,
+            "logon_id": None,
+            "process_name": executable_name,
+            "activity_type": "prefetch_execution",
+            "activity_stage": "observed",
+            "activity_tags": ["prefetch", "execution"],
+            "confidence": 0.55,
+            "indicators": indicators,
+            "summary": summary,
+            "event_data": {
+                "strings_preview": strings[:25],
+                "strings_count": len(strings),
+                "executable_name": executable_name,
+                "signature": signature,
+                "version": version,
+            },
+            "user_data": {},
+            "system_data": {
+                "file_size": prefetched_size(prefetch_path),
+                "suffix": prefetch_path.suffix.lower(),
+                "signature": signature,
+                "version": version,
+            },
+            "raw_xml": None,
+        }
+    ]
+
+
+def _browser_history_extract_records(history_path: Path) -> List[Dict[str, Any]]:
+    temp_path = _temp_copy_for_sqlite(history_path)
+    records: List[Dict[str, Any]] = []
+
+    try:
+        connection = sqlite3.connect(f"file:{temp_path.as_posix()}?mode=ro", uri=True)
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return []
+
+    try:
+        cursor = connection.cursor()
+        tables = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+        try:
+            if "urls" in tables:
+                for row in cursor.execute(
+                    "SELECT url, title, visit_count, typed_count, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 500"
+                ):
+                    url, title, visit_count, typed_count, last_visit_time = row
+                    records.append(
+                        {
+                            "log_path": str(history_path),
+                            "source_kind": "browser_history",
+                            "record_index": len(records),
+                            "event_id": None,
+                            "record_id": None,
+                            "provider": "browser_history",
+                            "channel": None,
+                            "computer": None,
+                            "level": None,
+                            "task": None,
+                            "opcode": None,
+                            "keywords": None,
+                            "timestamp": _chrome_time_to_iso(last_visit_time),
+                            "user_context": {
+                                "user_name": None,
+                                "user_domain": None,
+                                "user_sid": None,
+                                "logon_id": None,
+                                "process_name": None,
+                                "user_summary": None,
+                            },
+                            "user_name": None,
+                            "user_domain": None,
+                            "user_sid": None,
+                            "logon_id": None,
+                            "process_name": None,
+                            "activity_type": "browser_history_visit",
+                            "activity_stage": "observed",
+                            "activity_tags": ["browser_history", "visit"],
+                            "confidence": 0.6,
+                            "indicators": [f"url:{url}", f"typed_count:{typed_count}", f"visit_count:{visit_count}"],
+                            "summary": f"Browser visit: {title or url}",
+                            "event_data": {
+                                "url": url,
+                                "title": title,
+                                "visit_count": visit_count,
+                                "typed_count": typed_count,
+                            },
+                            "user_data": {},
+                            "system_data": {"table": "urls"},
+                            "raw_xml": None,
+                        }
+                    )
+        except Exception:
+            pass
+
+        try:
+            if "downloads" in tables:
+                for row in cursor.execute(
+                    "SELECT tab_url, target_path, start_time, end_time, total_bytes, received_bytes, state FROM downloads ORDER BY end_time DESC LIMIT 500"
+                ):
+                    tab_url, target_path, start_time, end_time, total_bytes, received_bytes, state = row
+                    complete = bool(end_time)
+                    activity_type = "file_transfer_completed" if complete else "file_transfer_initiated"
+                    activity_stage = "completed" if complete else "initiated"
+                    records.append(
+                        {
+                            "log_path": str(history_path),
+                            "source_kind": "browser_history",
+                            "record_index": len(records),
+                            "event_id": None,
+                            "record_id": None,
+                            "provider": "browser_downloads",
+                            "channel": None,
+                            "computer": None,
+                            "level": None,
+                            "task": None,
+                            "opcode": None,
+                            "keywords": None,
+                            "timestamp": _chrome_time_to_iso(end_time or start_time),
+                            "user_context": {
+                                "user_name": None,
+                                "user_domain": None,
+                                "user_sid": None,
+                                "logon_id": None,
+                                "process_name": None,
+                                "user_summary": None,
+                            },
+                            "user_name": None,
+                            "user_domain": None,
+                            "user_sid": None,
+                            "logon_id": None,
+                            "process_name": None,
+                            "activity_type": activity_type,
+                            "activity_stage": activity_stage,
+                            "activity_tags": ["browser_history", "download", "file_transfer"],
+                            "confidence": 0.75,
+                            "indicators": [f"url:{tab_url}", f"target:{target_path}", f"state:{state}"],
+                            "summary": f"Browser download {activity_stage}: {Path(target_path).name if target_path else tab_url}",
+                            "event_data": {
+                                "tab_url": tab_url,
+                                "target_path": target_path,
+                                "start_time": _chrome_time_to_iso(start_time),
+                                "end_time": _chrome_time_to_iso(end_time),
+                                "total_bytes": total_bytes,
+                                "received_bytes": received_bytes,
+                                "state": state,
+                            },
+                            "user_data": {},
+                            "system_data": {"table": "downloads"},
+                            "raw_xml": None,
+                        }
+                    )
+        except Exception:
+            pass
+
+        try:
+            if {"moz_places", "moz_historyvisits"}.issubset(tables):
+                for row in cursor.execute(
+                    "SELECT moz_places.url, moz_places.title, moz_places.visit_count, moz_historyvisits.visit_date, moz_historyvisits.visit_type "
+                    "FROM moz_places JOIN moz_historyvisits ON moz_places.id = moz_historyvisits.place_id "
+                    "ORDER BY moz_historyvisits.visit_date DESC LIMIT 500"
+                ):
+                    url, title, visit_count, visit_date, visit_type = row
+                    records.append(
+                        {
+                            "log_path": str(history_path),
+                            "source_kind": "browser_history",
+                            "record_index": len(records),
+                            "event_id": None,
+                            "record_id": None,
+                            "provider": "firefox_history",
+                            "channel": None,
+                            "computer": None,
+                            "level": None,
+                            "task": None,
+                            "opcode": None,
+                            "keywords": None,
+                            "timestamp": _unix_time_to_iso(visit_date),
+                            "user_context": {
+                                "user_name": None,
+                                "user_domain": None,
+                                "user_sid": None,
+                                "logon_id": None,
+                                "process_name": None,
+                                "user_summary": None,
+                            },
+                            "user_name": None,
+                            "user_domain": None,
+                            "user_sid": None,
+                            "logon_id": None,
+                            "process_name": None,
+                            "activity_type": "browser_history_visit",
+                            "activity_stage": "observed",
+                            "activity_tags": ["browser_history", "visit"],
+                            "confidence": 0.6,
+                            "indicators": [f"url:{url}", f"visit_type:{visit_type}", f"visit_count:{visit_count}"],
+                            "summary": f"Browser visit: {title or url}",
+                            "event_data": {
+                                "url": url,
+                                "title": title,
+                                "visit_count": visit_count,
+                                "visit_type": visit_type,
+                            },
+                            "user_data": {},
+                            "system_data": {"table": "moz_places"},
+                            "raw_xml": None,
+                        }
+                    )
+        except Exception:
+            pass
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return records
+
+
+def parse_registry_hive(hive_path: str) -> List[Dict[str, Any]]:
+    path = Path(hive_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Registry hive not found: {hive_path}")
+    return _registry_extract_records(path)
+
+
+def parse_prefetch_file(prefetch_path: str) -> List[Dict[str, Any]]:
+    path = Path(prefetch_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Prefetch file not found: {prefetch_path}")
+    return _prefetch_extract_records(path)
+
+
+def parse_browser_history_db(history_path: str) -> List[Dict[str, Any]]:
+    path = Path(history_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Browser history database not found: {history_path}")
+    return _browser_history_extract_records(path)
+
+
+def parse_artifact_file(artifact_path: str) -> List[Dict[str, Any]]:
+    path = Path(artifact_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Artifact not found: {artifact_path}")
+
+    source_kind = _artifact_source_kind(path)
+    if source_kind == "event_log":
+        return parse_event_log(artifact_path)
+    if source_kind == "registry_hive":
+        return parse_registry_hive(artifact_path)
+    if source_kind == "prefetch":
+        return parse_prefetch_file(artifact_path)
+    if source_kind == "browser_history":
+        return parse_browser_history_db(artifact_path)
+    return []
 
 
 def _summarize_users(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -548,15 +1141,20 @@ def _collect_events_from_paths(log_paths: Sequence[str], source_kind: str) -> Tu
         path = Path(log_path)
         if not path.exists():
             continue
-        scanned_paths.append(str(path))
-        try:
-            raw_events = parse_event_log(str(path))
-        except Exception:
-            raw_events = []
+        paths_to_scan = [path]
+        if path.is_dir():
+            paths_to_scan = [child for child in path.rglob("*") if child.is_file() and _artifact_source_kind(child) != "unknown"]
 
-        for index, raw_event in enumerate(raw_events):
-            parsed = _normalize_event(raw_event, str(path), index, source_kind)
-            parsed_logs.append(parsed)
+        for candidate in paths_to_scan:
+            scanned_paths.append(str(candidate))
+            try:
+                raw_events = parse_artifact_file(str(candidate))
+            except Exception:
+                raw_events = []
+
+            for index, raw_event in enumerate(raw_events):
+                parsed = _normalize_event(raw_event, str(candidate), index, _artifact_source_kind(candidate) or source_kind)
+                parsed_logs.append(parsed)
 
     parsed_logs.sort(key=_event_sort_key)
     return parsed_logs, scanned_paths
@@ -567,18 +1165,24 @@ def analyze_event_logs(
     limit: int = 100,
     case_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Inspect EVTX/XML files for USB, file-transfer, and user activity."""
-    candidate_paths = [str(path) for path in (log_paths or _default_event_log_paths()) if path]
+    """Inspect Windows artifacts for USB, clipboard, file-transfer, and user activity."""
+    candidate_paths = [str(path) for path in (log_paths or _iter_default_artifact_paths()) if path]
     events, scanned_paths = _collect_events_from_paths(candidate_paths, source_kind="device_scan")
 
     usb_events = _select_events(events, lambda event: "usb" in (event.get("activity_tags") or []))
     file_transfer_events = _select_events(events, lambda event: "file_transfer" in (event.get("activity_tags") or []))
+    clipboard_events = _select_events(events, lambda event: "clipboard" in (event.get("activity_tags") or []))
     user_attribution_events = _select_events(events, lambda event: bool(event.get("user_context", {}).get("user_summary")))
     usb_connected_events = _select_events(events, lambda event: event.get("activity_type") == "usb_connected")
     usb_mounted_events = _select_events(events, lambda event: event.get("activity_type") == "usb_mounted")
     usb_removed_events = _select_events(events, lambda event: event.get("activity_type") == "usb_removed")
     file_transfer_started_events = _select_events(events, lambda event: event.get("activity_type") == "file_transfer_initiated")
     file_transfer_completed_events = _select_events(events, lambda event: event.get("activity_type") == "file_transfer_completed")
+    clipboard_copy_events = _select_events(events, lambda event: event.get("activity_type") == "clipboard_copy")
+    clipboard_paste_events = _select_events(events, lambda event: event.get("activity_type") == "clipboard_paste")
+    registry_events = _select_events(events, lambda event: event.get("source_kind") == "registry_hive")
+    prefetch_events = _select_events(events, lambda event: event.get("source_kind") == "prefetch")
+    browser_history_events = _select_events(events, lambda event: event.get("source_kind") == "browser_history")
 
     activity_counts = _summarize_activity(events)
     user_counts = _summarize_users(events)
@@ -587,6 +1191,7 @@ def analyze_event_logs(
     return {
         "case_id": case_id,
         "logs_scanned": scanned_paths,
+        "artifact_types": sorted({str(event.get("source_kind") or "unknown") for event in events}),
         "event_count": len(events),
         "usb_connection_count": len(usb_connected_events),
         "usb_mounted_count": len(usb_mounted_events),
@@ -594,6 +1199,12 @@ def analyze_event_logs(
         "file_transfer_started_count": len(file_transfer_started_events),
         "file_transfer_completed_count": len(file_transfer_completed_events),
         "file_transfer_count": len(file_transfer_events),
+        "clipboard_count": len(clipboard_events),
+        "clipboard_copy_count": len(clipboard_copy_events),
+        "clipboard_paste_count": len(clipboard_paste_events),
+        "registry_event_count": len(registry_events),
+        "prefetch_event_count": len(prefetch_events),
+        "browser_history_event_count": len(browser_history_events),
         "user_attribution_count": len(user_attribution_events),
         "activity_counts": activity_counts,
         "user_counts": user_counts,
@@ -605,6 +1216,12 @@ def analyze_event_logs(
         "file_transfer_events": file_transfer_events[:limit],
         "file_transfer_started_events": file_transfer_started_events[:limit],
         "file_transfer_completed_events": file_transfer_completed_events[:limit],
+        "clipboard_events": clipboard_events[:limit],
+        "clipboard_copy_events": clipboard_copy_events[:limit],
+        "clipboard_paste_events": clipboard_paste_events[:limit],
+        "registry_events": registry_events[:limit],
+        "prefetch_events": prefetch_events[:limit],
+        "browser_history_events": browser_history_events[:limit],
         "user_attribution_events": user_attribution_events[:limit],
         "summary": {
             "event_count": len(events),
@@ -613,6 +1230,12 @@ def analyze_event_logs(
             "usb_removed_count": len(usb_removed_events),
             "file_transfer_started_count": len(file_transfer_started_events),
             "file_transfer_completed_count": len(file_transfer_completed_events),
+            "clipboard_count": len(clipboard_events),
+            "clipboard_copy_count": len(clipboard_copy_events),
+            "clipboard_paste_count": len(clipboard_paste_events),
+            "registry_event_count": len(registry_events),
+            "prefetch_event_count": len(prefetch_events),
+            "browser_history_event_count": len(browser_history_events),
             "user_attribution_count": len(user_attribution_events),
             "unique_users": len(user_counts),
             "logs_scanned": len(scanned_paths),
@@ -630,17 +1253,21 @@ def analyze_uploaded_artifact(
     """Return file metadata plus device-log intelligence for a newly uploaded artifact."""
     file_metadata = file_metadata or extract_file_metadata(file_path)
     uploaded_events: List[Dict[str, Any]] = []
-    source_kind = "uploaded_file"
+    source_kind = _artifact_source_kind(Path(file_path))
 
-    if file_metadata.get("extension") in {".evtx", ".xml"}:
-        try:
-            raw_uploaded_events = parse_event_log(file_path)
-            uploaded_events = [
-                _normalize_event(event, str(Path(file_path)), index, source_kind)
-                for index, event in enumerate(raw_uploaded_events)
-            ]
-        except Exception:
-            uploaded_events = []
+    if log_paths is not None:
+        missing_paths = [str(Path(path)) for path in log_paths if path and not Path(path).exists()]
+        if missing_paths:
+            raise FileNotFoundError(f"Log path not found: {missing_paths[0]}")
+
+    try:
+        raw_uploaded_events = parse_artifact_file(file_path)
+        uploaded_events = [
+            _normalize_event(event, str(Path(file_path)), index, source_kind)
+            for index, event in enumerate(raw_uploaded_events)
+        ]
+    except Exception:
+        uploaded_events = []
 
     event_log_scan = analyze_event_logs(log_paths=log_paths, limit=limit, case_id=case_id)
     merged_users = {
@@ -652,6 +1279,7 @@ def analyze_uploaded_artifact(
     return {
         "case_id": case_id,
         "artifact_path": str(Path(file_path).resolve()),
+        "artifact_type": source_kind,
         "file_metadata": file_metadata,
         "event_log_scan": event_log_scan,
         "uploaded_event_count": len(uploaded_events),
@@ -664,6 +1292,10 @@ def analyze_uploaded_artifact(
             "usb_events_found": event_log_scan["summary"]["usb_connection_count"],
             "file_transfer_events_found": event_log_scan["summary"]["file_transfer_started_count"]
             + event_log_scan["summary"]["file_transfer_completed_count"],
+            "clipboard_events_found": event_log_scan["summary"].get("clipboard_count", 0),
+            "registry_events_found": event_log_scan["summary"].get("registry_event_count", 0),
+            "prefetch_events_found": event_log_scan["summary"].get("prefetch_event_count", 0),
+            "browser_history_events_found": event_log_scan["summary"].get("browser_history_event_count", 0),
             "user_attributions_found": event_log_scan["summary"]["user_attribution_count"],
             "uploaded_log_events_found": len(uploaded_events),
         },
@@ -718,7 +1350,8 @@ def persist_log_analysis(analysis: Dict[str, Any], source_path: Optional[str] = 
         session_rows = getattr(session_response, "data", []) or []
         session_row = session_rows[0] if session_rows else {}
         session_id = session_row.get("id")
-    except Exception as exc:
+    except Exception:
+        logger.exception("Failed to insert log_analysis_sessions row")
         return {"ok": False, "error": str(exc), "session": None, "events_inserted": 0}
 
     event_rows: List[Dict[str, Any]] = []
@@ -788,6 +1421,18 @@ class LogModule:
     def parse_event_log(self, log_path: str) -> List[Dict[str, Any]]:
         return parse_event_log(log_path)
 
+    def parse_registry_hive(self, hive_path: str) -> List[Dict[str, Any]]:
+        return parse_registry_hive(hive_path)
+
+    def parse_prefetch_file(self, prefetch_path: str) -> List[Dict[str, Any]]:
+        return parse_prefetch_file(prefetch_path)
+
+    def parse_browser_history_db(self, history_path: str) -> List[Dict[str, Any]]:
+        return parse_browser_history_db(history_path)
+
+    def parse_artifact_file(self, artifact_path: str) -> List[Dict[str, Any]]:
+        return parse_artifact_file(artifact_path)
+
     def analyze_event_logs(
         self,
         log_paths: Optional[Sequence[str]] = None,
@@ -814,3 +1459,28 @@ class LogModule:
 
     def persist_log_analysis(self, analysis: Dict[str, Any], source_path: Optional[str] = None) -> Dict[str, Any]:
         return persist_log_analysis(analysis, source_path=source_path)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Analyze Windows artifacts and emit a master activity timeline")
+    parser.add_argument("artifact_path", nargs="?", help="Path to an EVTX, registry hive, prefetch file, or browser history DB")
+    parser.add_argument("--case-id", dest="case_id", default=None)
+    parser.add_argument("--log-path", dest="log_paths", action="append", default=[])
+    parser.add_argument("--limit", dest="limit", type=int, default=100)
+    args = parser.parse_args()
+
+    module = LogModule()
+    if args.artifact_path:
+        output = module.analyze_uploaded_artifact(
+            args.artifact_path,
+            case_id=args.case_id,
+            log_paths=args.log_paths or None,
+            limit=args.limit,
+        )
+    else:
+        output = module.analyze_event_logs(log_paths=args.log_paths or None, limit=args.limit, case_id=args.case_id)
+
+    print(json.dumps(output, indent=2, default=str))

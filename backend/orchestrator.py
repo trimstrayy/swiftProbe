@@ -8,12 +8,15 @@ This module uses environment variables `SUPABASE_URL` and `SUPABASE_KEY`.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Dict, List
 
 from backend.core.supabase_db import get_supabase_client
 from backend.hasher import hash_file, normalize_sha256, store_file_operation
+
+logger = logging.getLogger(__name__)
 
 
 def _insert_recovered_row(supa, payload: Dict[str, object]) -> None:
@@ -23,8 +26,8 @@ def _insert_recovered_row(supa, payload: Dict[str, object]) -> None:
 
     try:
         supa.table("files_recovered").insert(payload).execute()
-    except Exception as exc:
-        print("[orchestrator] Failed to insert files_recovered row:", exc)
+    except Exception:
+        logger.exception("Failed to insert files_recovered row")
 
 
 def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
@@ -36,10 +39,10 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
     if not Path(image_path).exists():
         raise FileNotFoundError(f"Evidence image not found: {image_path}")
 
-    print(f"[orchestrator] Hashing source image: {image_path}")
+    logger.info("Hashing source image: %s", image_path)
     source_meta = hash_file(image_path)
     source_hash = normalize_sha256(str(source_meta.get("hash", "")))
-    print(f"[orchestrator] Source image SHA256: {source_hash}")
+    logger.info("Source image SHA256: %s", source_hash)
 
     supa = get_supabase_client()
     target_set = set()
@@ -51,25 +54,25 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
                 expected_hash = row.get("expected_sha256")
                 if expected_hash:
                     target_set.add(normalize_sha256(expected_hash))
-            print(f"[orchestrator] Loaded {len(target_set)} target fingerprints from Supabase")
-        except Exception as exc:
-            print("[orchestrator] Failed to fetch target_artifacts:", exc)
+            logger.info("Loaded %s target fingerprints from Supabase", len(target_set))
+        except Exception:
+            logger.exception("Failed to fetch target_artifacts")
 
     from modules.carver import carve_from_image
 
     outdir = Path("evidence") / "carved_output" / case_id
     outdir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[orchestrator] Running carver -> {outdir}")
+    logger.info("Running carver -> %s", outdir)
     try:
         carved_meta = carve_from_image(image_path, str(outdir))
-    except Exception as exc:
-        print("[orchestrator] Carver failed:", exc)
+    except Exception:
+        logger.exception("Carver failed")
         carved_meta = []
 
     post_carve_meta = hash_file(image_path)
     post_carve_hash = normalize_sha256(str(post_carve_meta.get("hash", "")))
-    print(f"[orchestrator] Post-carve source image SHA256: {post_carve_hash}")
+    logger.info("Post-carve source image SHA256: %s", post_carve_hash)
 
     if source_hash != post_carve_hash:
         contaminated_payload = {
@@ -131,7 +134,7 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
 
                 match = actual in target_set
                 if match:
-                    print(f"[orchestrator] *** POSITIVE MATCH: {fname} sha256={actual}")
+                    logger.info("*** POSITIVE MATCH: %s sha256=%s", fname, actual)
 
                 payload = {
                     "case_id": case_id,
@@ -158,8 +161,8 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
 
                 _insert_recovered_row(supa, payload)
                 processed.append(payload)
-            except Exception as exc:
-                print(f"[orchestrator] Failed processing carved file {fpath}:", exc)
+            except Exception:
+                logger.exception("Failed processing carved file %s", fpath)
 
     operation_payload = {
         "case_id": case_id,
@@ -179,7 +182,7 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
 
     store_file_operation(operation_payload)
 
-    print(f"[orchestrator] Pipeline complete. Processed {len(processed)} carved items.")
+    logger.info("Pipeline complete. Processed %s carved items.", len(processed))
     return processed
 
 

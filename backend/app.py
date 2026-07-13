@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+import traceback
 from uuid import uuid4
 from pathlib import Path
+from typing import Any, Dict
 
 from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
@@ -21,8 +24,19 @@ try:
 except ImportError:  # pragma: no cover - supports running from the backend folder
     from modules.log_module import analyze_uploaded_artifact
 
+try:
+    from backend.modules.log_module import analyze_event_logs
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from modules.log_module import analyze_event_logs
+
+try:
+    from backend.hasher import hash_file
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from hasher import hash_file
+
 app = Flask(__name__)
 UPLOAD_ROOT = Path("evidence") / "uploads"
+logger = logging.getLogger(__name__)
 
 
 def _json_error(message: str, status_code: int = 400):
@@ -37,12 +51,13 @@ def _get_targets(client):
         response = (
             client.table("target_artifacts")
             .select("filename,expected_sha256,description")
-            .order("filename", {"ascending": True})
+                .order("filename", desc=False)
             .execute()
         )
         rows = getattr(response, "data", []) or []
         return rows, True, None
     except Exception as exc:
+        logger.exception("Failed to fetch target_artifacts")
         return [], True, str(exc)
 
 
@@ -54,45 +69,88 @@ def _get_recovered(client, case_id: str | None = None):
         query = client.table("files_recovered").select("*")
         if case_id:
             query = query.eq("case_id", case_id)
-        response = query.order("match_found", {"ascending": False}).order("filename", {"ascending": True}).execute()
+        response = query.order("match_found", desc=False).order("filename", desc=False).execute()
         rows = getattr(response, "data", []) or []
         return rows, True, None
     except Exception as exc:
+        logger.exception("Failed to fetch files_recovered")
         return [], True, str(exc)
 
 
-def _run_pipeline_for_image(image_file: Path, case_id: str):
-    from backend.hasher import hash_file
+def _empty_log_analysis(source_meta: Dict[str, Any], case_id: str, error: str) -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "case_id": case_id,
+        "artifact_path": None,
+        "error": error,
+        "file_metadata": source_meta,
+        "event_log_scan": {
+            "logs_scanned": [],
+            "artifact_types": [],
+            "event_count": 0,
+            "usb_connection_events": [],
+            "file_transfer_events": [],
+            "usb_connection_count": 0,
+            "file_transfer_count": 0,
+            "clipboard_count": 0,
+            "registry_event_count": 0,
+            "prefetch_event_count": 0,
+            "browser_history_event_count": 0,
+            "summary": {
+                "event_count": 0,
+                "usb_connection_count": 0,
+                "usb_mounted_count": 0,
+                "usb_removed_count": 0,
+                "file_transfer_started_count": 0,
+                "file_transfer_completed_count": 0,
+                "clipboard_count": 0,
+                "clipboard_copy_count": 0,
+                "clipboard_paste_count": 0,
+                "registry_event_count": 0,
+                "prefetch_event_count": 0,
+                "browser_history_event_count": 0,
+                "user_attribution_count": 0,
+                "unique_users": 0,
+                "logs_scanned": 0,
+            },
+        },
+        "uploaded_event_count": 0,
+        "uploaded_events": [],
+        "identified_users": [],
+        "summary": {
+            "source_filename": source_meta.get("filename"),
+            "source_hash": source_meta.get("hash"),
+            "source_size_bytes": source_meta.get("size", 0),
+            "usb_events_found": 0,
+            "file_transfer_events_found": 0,
+            "clipboard_events_found": 0,
+            "registry_events_found": 0,
+            "prefetch_events_found": 0,
+            "browser_history_events_found": 0,
+            "user_attributions_found": 0,
+            "uploaded_log_events_found": 0,
+        },
+    }
 
+
+def _run_pipeline_for_image(image_file: Path, case_id: str, log_paths=None):
     client = get_supabase_client()
     source_meta = hash_file(str(image_file))
+    log_analysis_ok = True
+    log_analysis_error = None
     try:
-        log_analysis = analyze_uploaded_artifact(str(image_file), str(case_id), file_metadata=source_meta)
+        log_analysis = analyze_uploaded_artifact(
+            str(image_file),
+            str(case_id),
+            log_paths=log_paths,
+            file_metadata=source_meta,
+        )
+        log_analysis["ok"] = True
     except Exception as exc:
-        log_analysis = {
-            "case_id": case_id,
-            "artifact_path": str(image_file),
-            "error": str(exc),
-            "file_metadata": source_meta,
-            "event_log_scan": {
-                "logs_scanned": [],
-                "event_count": 0,
-                "usb_connection_events": [],
-                "file_transfer_events": [],
-                "usb_connection_count": 0,
-                "file_transfer_count": 0,
-            },
-            "uploaded_event_count": 0,
-            "uploaded_events": [],
-            "summary": {
-                "source_filename": source_meta.get("filename"),
-                "source_hash": source_meta.get("hash"),
-                "source_size_bytes": source_meta.get("size", 0),
-                "usb_events_found": 0,
-                "file_transfer_events_found": 0,
-                "uploaded_log_events_found": 0,
-            },
-        }
+        logger.exception("Log analysis failed during pipeline run")
+        log_analysis_ok = False
+        log_analysis_error = str(exc)
+        log_analysis = _empty_log_analysis(source_meta, case_id, str(exc))
     recovered_before, connected_before, error_before = _get_recovered(client, case_id=case_id)
 
     processed = process_evidence_pipeline(str(image_file), str(case_id))
@@ -106,6 +164,8 @@ def _run_pipeline_for_image(image_file: Path, case_id: str):
         "source_image_size": source_meta.get("size", 0),
         "file_metadata": source_meta,
         "log_analysis": log_analysis,
+        "log_analysis_ok": log_analysis_ok,
+        "log_analysis_error": log_analysis_error,
         "database_sync_status": "connected" if client is not None else "not_configured",
         "supabase_connected": connected_before,
         "supabase_error": error_before,
@@ -192,6 +252,7 @@ def run_pipeline():
     payload = request.get_json(silent=True) or {}
     image_path = payload.get("image_path")
     case_id = payload.get("case_id")
+    log_paths = payload.get("log_paths")
 
     if not image_path or not case_id:
         return _json_error("Both image_path and case_id are required.", 400)
@@ -201,8 +262,9 @@ def run_pipeline():
         return _json_error(f"Evidence image not found: {image_file}", 404)
 
     try:
-        return jsonify(_run_pipeline_for_image(image_file, str(case_id)))
+        return jsonify(_run_pipeline_for_image(image_file, str(case_id), log_paths=log_paths))
     except Exception as exc:
+        logger.exception("Pipeline run failed")
         return jsonify(
             {
                 "ok": False,
@@ -217,6 +279,7 @@ def run_pipeline():
 def run_pipeline_upload():
     case_id = request.form.get("case_id")
     uploaded_file = request.files.get("image_file") or request.files.get("file") or request.files.get("image")
+    log_paths = request.form.getlist("log_paths") or request.form.get("log_paths")
 
     if not case_id:
         return _json_error("case_id is required.", 400)
@@ -226,7 +289,7 @@ def run_pipeline_upload():
 
     try:
         saved_path = _save_uploaded_image(uploaded_file, str(case_id))
-        payload = _run_pipeline_for_image(saved_path, str(case_id))
+        payload = _run_pipeline_for_image(saved_path, str(case_id), log_paths=log_paths)
         payload.update(
             {
                 "uploaded_filename": uploaded_file.filename,
@@ -235,9 +298,54 @@ def run_pipeline_upload():
         )
         return jsonify(payload)
     except Exception as exc:
+        logger.exception("Pipeline upload failed")
         return jsonify(
             {
                 "ok": False,
+                "case_id": case_id,
+                "error": str(exc),
+            }
+        ), 500
+
+
+@app.post("/api/log/analyze")
+def analyze_log_artifacts():
+    payload = request.get_json(silent=True) or {}
+    artifact_path = payload.get("artifact_path")
+    log_paths = payload.get("log_paths")
+    case_id = payload.get("case_id")
+
+    if not artifact_path:
+        return _json_error("artifact_path is required.", 400)
+
+    artifact_file = Path(str(artifact_path))
+    if not artifact_file.exists():
+        return _json_error(f"Artifact not found: {artifact_file}", 404)
+
+    try:
+        result = analyze_uploaded_artifact(
+            str(artifact_file),
+            case_id=str(case_id) if case_id else None,
+            log_paths=log_paths,
+        )
+        result["ok"] = True
+        return jsonify(result)
+    except FileNotFoundError as exc:
+        logger.exception("Log analysis file not found")
+        return jsonify(
+            {
+                "ok": False,
+                "artifact_path": str(artifact_file),
+                "case_id": case_id,
+                "error": str(exc),
+            }
+        ), 404
+    except Exception as exc:
+        logger.exception("Log analysis endpoint failed")
+        return jsonify(
+            {
+                "ok": False,
+                "artifact_path": str(artifact_path),
                 "case_id": case_id,
                 "error": str(exc),
             }
