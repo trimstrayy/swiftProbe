@@ -12,8 +12,15 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
-from backend.core.supabase_db import get_supabase_client
-from backend.hasher import hash_file, normalize_sha256, store_file_operation
+try:
+    from backend.core.supabase_db import get_supabase_client
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from core.supabase_db import get_supabase_client
+
+try:
+    from backend.hasher import hash_file, normalize_sha256, store_file_operation
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from hasher import hash_file, normalize_sha256, store_file_operation
 
 
 def _insert_recovered_row(supa, payload: Dict[str, object]) -> None:
@@ -55,7 +62,10 @@ def process_evidence_pipeline(image_path: str, case_id: str) -> List[Dict]:
         except Exception as exc:
             print("[orchestrator] Failed to fetch target_artifacts:", exc)
 
-    from modules.carver import carve_from_image
+    try:
+        from modules.carver import carve_from_image
+    except ImportError:
+        from backend.modules.carver import carve_from_image
 
     outdir = Path("evidence") / "carved_output" / case_id
     outdir.mkdir(parents=True, exist_ok=True)

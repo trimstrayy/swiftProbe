@@ -45,3 +45,49 @@ export async function runPipelineByUpload({ caseId, file }) {
 
   return parseJson(response)
 }
+
+export async function runRamSanityByPath({ caseId, imagePath }) {
+  const response = await fetch('/api/ram/sanity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ case_id: caseId, image_path: imagePath }),
+  })
+
+  return parseJson(response)
+}
+
+export async function runRamAnalysisByPath({ caseId, imagePath }) {
+  const response = await fetch('/api/ram/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ case_id: caseId, image_path: imagePath }),
+  })
+
+  return parseJson(response)
+}
+
+export async function runRamSanityByUpload({ caseId, file }) {
+  const formData = new FormData()
+  formData.append('case_id', caseId)
+  formData.append('ram_file', file)
+
+  const response = await fetch('/api/ram/sanity', {
+    method: 'POST',
+    body: formData,
+  })
+
+  return parseJson(response)
+}
+
+export async function runRamAnalysisByUpload({ caseId, file }) {
+  const formData = new FormData()
+  formData.append('case_id', caseId)
+  formData.append('ram_file', file)
+
+  const response = await fetch('/api/ram/analyze', {
+    method: 'POST',
+    body: formData,
+  })
+
+  return parseJson(response)
+}

@@ -21,8 +21,14 @@ try:
 except ImportError:  # pragma: no cover - supports running from the backend folder
     from modules.log_module import analyze_uploaded_artifact
 
+try:
+    from backend.modules.ram_module import analyze_ram_dump, sanity_check_ram_capture
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from modules.ram_module import analyze_ram_dump, sanity_check_ram_capture
+
 app = Flask(__name__)
 UPLOAD_ROOT = Path("evidence") / "uploads"
+RAM_UPLOAD_ROOT = UPLOAD_ROOT / "ram"
 
 
 def _json_error(message: str, status_code: int = 400):
@@ -37,7 +43,7 @@ def _get_targets(client):
         response = (
             client.table("target_artifacts")
             .select("filename,expected_sha256,description")
-            .order("filename", {"ascending": True})
+            .order("filename")
             .execute()
         )
         rows = getattr(response, "data", []) or []
@@ -54,7 +60,7 @@ def _get_recovered(client, case_id: str | None = None):
         query = client.table("files_recovered").select("*")
         if case_id:
             query = query.eq("case_id", case_id)
-        response = query.order("match_found", {"ascending": False}).order("filename", {"ascending": True}).execute()
+        response = query.order("match_found", desc=True).order("filename").execute()
         rows = getattr(response, "data", []) or []
         return rows, True, None
     except Exception as exc:
@@ -126,6 +132,41 @@ def _save_uploaded_image(uploaded_file, case_id: str) -> Path:
     stored_path = case_dir / stored_name
     uploaded_file.save(stored_path)
     return stored_path
+
+
+def _save_uploaded_ram(uploaded_file, case_id: str) -> Path:
+    RAM_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    case_dir = RAM_UPLOAD_ROOT / secure_filename(case_id or "case")
+    case_dir.mkdir(parents=True, exist_ok=True)
+
+    original_name = secure_filename(uploaded_file.filename or "uploaded_memory.raw")
+    stored_name = f"{uuid4().hex}_{original_name}"
+    stored_path = case_dir / stored_name
+    uploaded_file.save(stored_path)
+    return stored_path
+
+
+def _resolve_ram_source(payload=None):
+    payload = payload or {}
+    case_id = payload.get("case_id") or request.form.get("case_id")
+    image_path = payload.get("image_path") or request.form.get("image_path")
+    uploaded_file = request.files.get("ram_file") or request.files.get("file") or request.files.get("image_file")
+
+    stored_path = None
+    if uploaded_file is not None and uploaded_file.filename:
+        if not case_id:
+            raise ValueError("case_id is required when uploading a RAM capture.")
+        stored_path = _save_uploaded_ram(uploaded_file, str(case_id))
+        image_path = str(stored_path)
+
+    if not image_path:
+        raise ValueError("image_path or ram_file is required.")
+
+    ram_path = Path(str(image_path))
+    if not ram_path.exists():
+        raise FileNotFoundError(f"RAM image not found: {ram_path}")
+
+    return case_id, ram_path, stored_path
 
 
 @app.get("/")
@@ -233,12 +274,64 @@ def run_pipeline_upload():
                 "stored_path": str(saved_path),
             }
         )
+
         return jsonify(payload)
     except Exception as exc:
         return jsonify(
             {
                 "ok": False,
                 "case_id": case_id,
+                "error": str(exc),
+            }
+        ), 500
+
+
+@app.post("/api/ram/sanity")
+def ram_sanity_check():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        case_id, ram_path, stored_path = _resolve_ram_source(payload)
+        report = sanity_check_ram_capture(str(ram_path))
+        return jsonify(
+            {
+                "ok": True,
+                "case_id": case_id,
+                "image_path": str(ram_path),
+                "stored_path": str(stored_path) if stored_path else None,
+                "report": report,
+                **report,
+            }
+        )
+    except Exception as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+            }
+        ), 500
+
+
+@app.post("/api/ram/analyze")
+def ram_analyze():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        case_id, ram_path, stored_path = _resolve_ram_source(payload)
+        analysis = analyze_ram_dump(str(ram_path))
+        return jsonify(
+            {
+                "ok": True,
+                "case_id": case_id,
+                "image_path": str(ram_path),
+                "stored_path": str(stored_path) if stored_path else None,
+                **analysis,
+            }
+        )
+    except Exception as exc:
+        return jsonify(
+            {
+                "ok": False,
                 "error": str(exc),
             }
         ), 500
@@ -251,4 +344,11 @@ def supabase_status():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    # NOTE: The reloader (debug=True) spawns a watchdog that monitors the
+    # filesystem. Uploading/processing large forensic captures (e.g. a 510MB
+    # RAM image) triggers file-write events that can restart the worker
+    # mid-request, severing the connection with net::ERR_CONNECTION_RESET
+    # instead of returning a clean 500. We therefore run WITHOUT the reloader.
+    # Debug is kept off so a Volatility subprocess crash cannot kill the worker
+    # and so the dev server behaves closer to a production WSGI server.
+    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)

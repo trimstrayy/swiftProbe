@@ -12,7 +12,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from backend.hasher import hash_file
+try:
+    from backend.hasher import hash_file
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from hasher import hash_file
 
 
 USB_KEYWORDS = (

@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchStatus,
   fetchTargets,
   fetchRecoveredFiles,
   runPipelineByPath,
   runPipelineByUpload,
+  runRamAnalysisByPath,
+  runRamAnalysisByUpload,
+  runRamSanityByPath,
+  runRamSanityByUpload,
 } from './services/pipelineApi'
 
 const initialForm = {
@@ -17,9 +21,31 @@ function MetricCard({ label, value, hint }) {
     <article className="rounded-2xl border border-white/10 bg-white/6 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.25)] backdrop-blur">
       <p className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">{label}</p>
       <div className="mt-3 text-3xl font-semibold text-white">{value}</div>
-      <p className="mt-2 text-sm text-slate-300">{hint}</p>
+      <p className="mt-2 truncate text-sm text-slate-300" title={hint}>{hint}</p>
     </article>
   )
+}
+
+const NUMERIC_COLUMN_KEYS = new Set([
+  "PID", "PPID", "Handles", "Threads", "Size",
+  "offset", "length", "file_size_bytes", "physical_offset_bytes",
+  "target_artifacts_count", "files_recovered_count",
+  "process_count", "process_tree_count", "network_connection_count",
+  "warning_count", "event_id"
+])
+
+const TIMESTAMP_COLUMN_KEYS = new Set([
+  "CREATETIME", "EXITTIME", "create_time", "exit_time",
+  "timestamp", "TimeStamp", "mtime", "created_time",
+  "modified_time", "accessed_time"
+])
+
+function isNumericColumn(key) {
+  return NUMERIC_COLUMN_KEYS.has(key)
+}
+
+function isTimestampColumn(key) {
+  return TIMESTAMP_COLUMN_KEYS.has(key)
 }
 
 function DataTable({ title, rows, emptyText }) {
@@ -30,12 +56,17 @@ function DataTable({ title, rows, emptyText }) {
         <span className="text-sm text-slate-400">{rows.length} rows</span>
       </div>
       {rows.length ? (
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full divide-y divide-white/10 text-left text-sm">
+        <div className="relative mt-4 w-full overflow-x-auto">
+          <table className="w-full divide-y divide-white/10 text-left text-sm">
             <thead className="text-slate-300">
               <tr>
                 {Object.keys(rows[0]).map((key) => (
-                  <th key={key} className="px-3 py-2 font-medium uppercase tracking-[0.2em]">
+                  <th
+                    key={key}
+                    className={`px-3 py-2 font-medium uppercase tracking-[0.2em] whitespace-nowrap ${
+                      isNumericColumn(key) ? 'text-right' : 'text-left'
+                    }`}
+                  >
                     {key}
                   </th>
                 ))}
@@ -44,11 +75,24 @@ function DataTable({ title, rows, emptyText }) {
             <tbody className="divide-y divide-white/5 text-slate-100">
               {rows.map((row, index) => (
                 <tr key={`${title}-${index}`} className={row.match_found ? 'bg-emerald-500/10' : ''}>
-                  {Object.values(row).map((value, cellIndex) => (
-                    <td key={`${index}-${cellIndex}`} className="px-3 py-2 align-top text-slate-200">
-                      {typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value ?? '')}
-                    </td>
-                  ))}
+                  {Object.keys(row).map((key, cellIndex) => {
+                    const value = row[key]
+                    const displayValue = typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value ?? '')
+                    return (
+                      <td
+                        key={`${index}-${cellIndex}`}
+                        className={`px-3 py-2 align-top text-slate-200 ${
+                          isNumericColumn(key)
+                            ? 'text-right font-mono tabular-nums'
+                            : isTimestampColumn(key)
+                              ? 'text-left font-mono text-xs whitespace-nowrap'
+                              : 'text-left'
+                        }`}
+                      >
+                        {displayValue}
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -197,6 +241,148 @@ function StagePill({ stage, activeStage, completedStages, failed }) {
   )
 }
 
+function RamSanitySection({ sanityReport }) {
+  if (!sanityReport) return null
+
+  return (
+    <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">RAM sanity</p>
+          <h3 className="mt-2 text-2xl font-semibold text-white">Preflight check</h3>
+        </div>
+        <span className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+          sanityReport.status === 'pass'
+            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+            : 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
+        }`}>
+          {sanityReport.status === 'pass' ? 'PASS' : 'FAIL'}
+        </span>
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          label="File size"
+          value={Number(sanityReport.size_bytes ?? 0).toLocaleString()}
+          hint={sanityReport.extension_supported ? 'Supported RAM extension' : 'Unsupported extension'}
+        />
+        <MetricCard
+          label="Memory candidate"
+          value={sanityReport.likely_memory_capture ? 'YES' : 'NO'}
+          hint="Based on extension and size heuristics"
+        />
+        <MetricCard
+          label="Plugin check"
+          value={sanityReport.plugin_check?.status ? sanityReport.plugin_check.status.toUpperCase() : 'N/A'}
+          hint={sanityReport.plugin_check?.plugin ?? 'windows.info.Info'}
+        />
+        <MetricCard
+          label="Image file"
+          value={(sanityReport.image_path ?? '').split(/[\\/]/).pop() || 'n/a'}
+          hint={sanityReport.image_path ?? ''}
+        />
+      </div>
+
+      {Array.isArray(sanityReport?.notes) && sanityReport.notes.length ? (
+        <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Notes</p>
+          <ul className="mt-3 space-y-2">
+            {sanityReport.notes.map((note, index) => (
+              <li key={`sanity-note-${index}`}>• {note}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {sanityReport?.plugin_check?.error ? (
+        <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+          <p className="text-xs uppercase tracking-[0.3em] text-amber-200/80">Plugin error</p>
+          <p className="mt-2 break-words">{sanityReport.plugin_check.error}</p>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function RamAnalysisSection({ analysisReport }) {
+  if (!analysisReport) return null
+
+  return (
+    <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">RAM analysis</p>
+          <h3 className="mt-2 text-2xl font-semibold text-white">Volatility results</h3>
+        </div>
+        {analysisReport.ok === false ? (
+          <span className="rounded-full border border-rose-400/30 bg-rose-500/20 px-4 py-1.5 text-sm font-semibold text-rose-300">
+            ERROR
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          label="Processes"
+          value={analysisReport.summary?.process_count ?? analysisReport.processes?.length ?? 0}
+          hint="Running process list extracted from memory"
+        />
+        <MetricCard
+          label="Process tree"
+          value={analysisReport.summary?.process_tree_count ?? analysisReport.process_tree?.length ?? 0}
+          hint="Parent/child relationship view"
+        />
+        <MetricCard
+          label="Network rows"
+          value={analysisReport.summary?.network_connection_count ?? analysisReport.network_connections?.length ?? 0}
+          hint={analysisReport.network_backend ? `Backend: ${analysisReport.network_backend}` : 'Network plugin output'}
+        />
+        <MetricCard
+          label="Warnings"
+          value={analysisReport.summary?.warning_count ?? analysisReport.warnings?.length ?? 0}
+          hint="Non-fatal plugin limitations reported here"
+        />
+      </div>
+
+      {analysisReport.ok === false ? (
+        <div className="mt-5 rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100">
+          <p className="text-xs uppercase tracking-[0.3em] text-rose-200/80">Analysis Error</p>
+          <p className="mt-2 break-words">{analysisReport.error}</p>
+        </div>
+      ) : null}
+
+      {Array.isArray(analysisReport.warnings) && analysisReport.warnings.length ? (
+        <div className="mt-5 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+          <p className="text-xs uppercase tracking-[0.3em] text-amber-200/80">Warnings</p>
+          <ul className="mt-3 space-y-2">
+            {analysisReport.warnings.map((warning, index) => (
+              <li key={`ram-warning-${index}`}>• {warning}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mt-6 space-y-6">
+        <DataTable
+          title="Process List"
+          rows={analysisReport.processes ?? []}
+          emptyText="No process rows were returned."
+        />
+        <DataTable
+          title="Process Tree"
+          rows={analysisReport.process_tree ?? []}
+          emptyText="No process tree rows were returned."
+        />
+        <DataTable
+          title="Network Connections"
+          rows={analysisReport.network_connections ?? []}
+          emptyText="No network rows were returned for this capture."
+        />
+      </div>
+    </section>
+  )
+}
+
 export default function App() {
   const [form, setForm] = useState(initialForm)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -211,6 +397,13 @@ export default function App() {
   const [runLog, setRunLog] = useState([])
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
+  const [ramImagePath, setRamImagePath] = useState('')
+  const [ramSelectedFile, setRamSelectedFile] = useState(null)
+  const [ramFileNote, setRamFileNote] = useState('No RAM file selected yet.')
+  const [ramSanity, setRamSanity] = useState(null)
+  const [ramAnalysis, setRamAnalysis] = useState(null)
+  const [ramRunning, setRamRunning] = useState(false)
+  const ramBusyRef = useRef(false)
 
   const stages = [
     { id: 'queued', label: 'Queued', description: 'Pipeline request is prepared and waiting to start.' },
@@ -312,6 +505,62 @@ export default function App() {
     }
   }
 
+  const runRamAction = async (runner, successMessage) => {
+    // Prevent duplicate submissions while a request is in-flight.
+    if (ramBusyRef.current) return
+    ramBusyRef.current = true
+    setRamRunning(true)
+    try {
+      const result = ramSelectedFile
+        ? await runner({ caseId: form.case_id, file: ramSelectedFile })
+        : await runner({ caseId: form.case_id, imagePath: ramImagePath })
+
+      // If the API returned a stored_path (from an upload), update the
+      // RAM image path field so the text input reflects the actual file on disk.
+      if (result?.stored_path) {
+        setRamImagePath(result.stored_path)
+      } else if (result?.image_path) {
+        setRamImagePath(result.image_path)
+      }
+
+      if (runner === runRamSanityByUpload || runner === runRamSanityByPath) {
+        setRamSanity(result)
+      } else {
+        setRamAnalysis(result)
+      }
+
+      logStage(successMessage)
+      await loadDashboard()
+      return result
+    } catch (error) {
+      const payload = { ok: false, error: error.message }
+      if (runner === runRamSanityByUpload || runner === runRamSanityByPath) {
+        setRamSanity(payload)
+      } else {
+        setRamAnalysis(payload)
+      }
+      logStage(`RAM analysis failed: ${error.message}`)
+      return payload
+    } finally {
+      setRamRunning(false)
+      ramBusyRef.current = false
+    }
+  }
+
+  const runRamSanityCheck = () => {
+    return runRamAction(
+      ramSelectedFile ? runRamSanityByUpload : runRamSanityByPath,
+      'RAM sanity check completed.'
+    )
+  }
+
+  const runRamAnalysis = () => {
+    return runRamAction(
+      ramSelectedFile ? runRamAnalysisByUpload : runRamAnalysisByPath,
+      'RAM analysis completed.'
+    )
+  }
+
   const statusText = status?.backend_unreachable
     ? 'Backend unavailable'
     : status?.supabase_configured
@@ -322,6 +571,19 @@ export default function App() {
     const file = event.target.files?.[0] ?? null
     setSelectedFile(file)
     setFileNote(file ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'No file selected yet.')
+  }
+
+  const handleRamFileChange = (event) => {
+    const file = event.target.files?.[0] ?? null
+    setRamSelectedFile(file)
+    setRamFileNote(file ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'No RAM file selected yet.')
+    setRamSanity(null)
+    setRamAnalysis(null)
+    // When a file is selected for upload, clear the stale path so it's
+    // obvious the upload widget is in control (not the text field).
+    if (file) {
+      setRamImagePath('')
+    }
   }
 
   return (
@@ -497,14 +759,72 @@ export default function App() {
             </section>
           </>
         ) : activeTab === 'ram' ? (
-          <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-10 shadow-2xl">
-            <div className="max-w-3xl">
+          <section className="flex flex-col gap-8">
+            {/* ── Setup card ── */}
+            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
               <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">RAM module</p>
-              <h2 className="mt-3 text-3xl font-semibold text-white">Reserved for volatile-memory analysis</h2>
+              <h2 className="mt-3 text-3xl font-semibold text-white">Volatile memory analysis</h2>
               <p className="mt-4 text-sm leading-7 text-slate-400">
-                This section is intentionally blank for now so the RAM module can be added separately without changing the file-carver or log workflows.
+                Run a sanity check first, then analyze a RAM capture for processes, process trees, and network artifacts.
+                The module accepts local paths or uploads.
               </p>
+
+              <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                <label className="flex flex-col gap-2 text-sm text-slate-300 sm:col-span-2">
+                  Case ID
+                  <input
+                    value={form.case_id}
+                    onChange={(event) => setForm((current) => ({ ...current, case_id: event.target.value }))}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
+                  />
+                </label>
+                <div className="flex items-end justify-end gap-3 sm:col-span-1">
+                  <button
+                    type="button"
+                    onClick={runRamSanityCheck}
+                    disabled={ramRunning}
+                    className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {ramRunning ? 'Running…' : 'Sanity Check'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={runRamAnalysis}
+                    disabled={ramRunning}
+                    className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {ramRunning ? 'Running…' : 'Analyze'}
+                  </button>
+                </div>
+              </div>
+              <label className="mt-4 flex flex-col gap-2 text-sm text-slate-300">
+                RAM image path
+                <input
+                  value={ramImagePath}
+                  onChange={(event) => setRamImagePath(event.target.value)}
+                  placeholder="Enter a file path or upload a file below"
+                  className="w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
+                />
+              </label>
+
+              <label className="mt-6 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 transition hover:border-cyan-300/60 hover:bg-cyan-300/10">
+                <span className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">RAM capture upload</span>
+                <span className="text-base text-white">Choose a memory image from your device</span>
+                <span className="text-slate-400">{ramFileNote}</span>
+                <input
+                  type="file"
+                  className="hidden"
+                  onChange={handleRamFileChange}
+                  accept=".raw,.mem,.dmp,.vmem,.lime,.aff4,.mddramimage"
+                />
+              </label>
             </div>
+
+            {/* ── Sanity results ── */}
+            <RamSanitySection sanityReport={ramSanity?.report ?? ramSanity} />
+
+            {/* ── Analysis results ── */}
+            <RamAnalysisSection analysisReport={ramAnalysis} />
           </section>
         ) : (
           <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">

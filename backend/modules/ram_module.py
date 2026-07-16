@@ -36,14 +36,26 @@ class RAMModule:
 
     def analyze(self) -> Dict[str, Any]:
         """Run the core memory triage plugins and return a structured summary."""
-        self._validate_image_path()
+        validation = self._validate_image_path()
+        if validation is not None:
+            return validation
 
         warnings: List[str] = []
         network_backend = None
 
-        process_list = self.list_processes()
-        process_tree = self.list_process_tree()
+        process_list = []
+        try:
+            process_list = self.list_processes()
+        except Exception as exc:
+            warnings.append(f"pslist unavailable: {exc}")
 
+        process_tree = []
+        try:
+            process_tree = self.list_process_tree()
+        except Exception as exc:
+            warnings.append(f"pstree unavailable: {exc}")
+
+        network_connections = []
         try:
             network_connections = self.list_network_connections()
             network_backend = "windows.netscan.NetScan"
@@ -128,30 +140,48 @@ class RAMModule:
 
     def list_processes(self) -> List[Dict[str, Any]]:
         """Return a normalized list of process records from pslist."""
-        output = self._run_plugin("windows.pslist.PsList")
-        return self._normalize_records(output)
+        try:
+            output = self._run_plugin("windows.pslist.PsList")
+            return self._normalize_records(output)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to list processes: {exc}")
 
     def list_process_tree(self) -> List[Dict[str, Any]]:
         """Return a normalized list of process-tree records from pstree."""
-        output = self._run_plugin("windows.pstree.PsTree")
-        return self._normalize_records(output)
+        try:
+            output = self._run_plugin("windows.pstree.PsTree")
+            return self._normalize_records(output)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to list process tree: {exc}")
 
     def list_network_connections(self) -> List[Dict[str, Any]]:
         """Return a normalized list of network connection records from netscan."""
-        output = self._run_plugin("windows.netscan.NetScan")
-        return self._normalize_records(output)
+        try:
+            output = self._run_plugin("windows.netscan.NetScan")
+            return self._normalize_records(output)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to list network connections: {exc}")
 
-    def _validate_image_path(self) -> None:
+    def _validate_image_path(self):
+        """Raise FileNotFoundError/ValueError if the path is invalid, otherwise None."""
         if not Path(self.image_path).is_file():
             raise FileNotFoundError(f"RAM image not found: {self.image_path}")
         if not self.is_supported_image():
             raise ValueError(
                 "Expected a RAM capture path such as .raw, .mem, .dmp, .vmem, .lime, or .aff4"
             )
+        return None
 
     def _run_plugin(self, plugin_name: str, extra_args: Sequence[str] | None = None) -> Any:
-        """Execute a Volatility 3 plugin and return the parsed renderer output."""
-        self._validate_image_path()
+        """Execute a Volatility 3 plugin and return the parsed renderer output.
+
+        Output is streamed to a temporary file rather than buffered entirely in
+        memory via ``capture_output=True``. This avoids holding a second copy of
+        a large capture's renderer output in the Flask worker's RAM and prevents
+        a Volatility crash/OOM from taking down the request handler.
+        """
+        import tempfile
+
         extra_args = list(extra_args or [])
 
         command = [
@@ -167,23 +197,47 @@ class RAMModule:
             *extra_args,
         ]
 
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"Volatility plugin timed out: {plugin_name}") from exc
+        # Stream Volatility's stdout/stderr to disk instead of buffering in RAM.
+        with tempfile.NamedTemporaryFile(
+            mode="w+", suffix=".vol.stdout", delete=False, encoding="utf-8"
+        ) as out_file, tempfile.NamedTemporaryFile(
+            mode="w+", suffix=".vol.stderr", delete=False, encoding="utf-8"
+        ) as err_file:
+            out_path = out_file.name
+            err_path = err_file.name
+            try:
+                completed = subprocess.run(
+                    command,
+                    stdout=out_file,
+                    stderr=err_file,
+                    check=False,
+                    timeout=self.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(f"Volatility plugin timed out: {plugin_name}") from exc
 
-        stdout = (completed.stdout or "").strip()
-        stderr = (completed.stderr or "").strip()
+        try:
+            with open(err_path, "r", encoding="utf-8", errors="replace") as fh:
+                stderr = fh.read().strip()
+            with open(out_path, "r", encoding="utf-8", errors="replace") as fh:
+                stdout = fh.read().strip()
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(err_path)
+            except OSError:
+                pass
 
         if completed.returncode != 0:
             message = stderr or stdout or f"Volatility exited with code {completed.returncode}"
-            raise RuntimeError(f"Volatility plugin failed ({plugin_name}): {message}")
+            # Extract only the last meaningful error line from the traceback
+            lines = message.strip().splitlines()
+            error_lines = [line for line in lines if line and not line.startswith("  ") and not line.startswith("File ")]
+            short_message = error_lines[-1] if error_lines else lines[-1]
+            raise RuntimeError(short_message)
 
         if not stdout:
             return []
@@ -246,7 +300,27 @@ class RAMModule:
 
 def analyze_ram_dump(image_path: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
     """Convenience wrapper for callers that do not need the class API."""
-    return RAMModule(image_path, timeout_seconds=timeout_seconds).analyze()
+    module = RAMModule(image_path, timeout_seconds=timeout_seconds)
+    try:
+        return module.analyze()
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "image_path": os.path.abspath(image_path),
+        }
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "image_path": os.path.abspath(image_path),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "image_path": os.path.abspath(image_path),
+        }
 
 
 def sanity_check_ram_capture(image_path: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
