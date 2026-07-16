@@ -36,6 +36,7 @@ WINDOWS_DEFAULT_LOG_PATHS = (
     "System32/winevt/Logs/Microsoft-Windows-UserPnp%4DeviceInstall.evtx",
     "System32/winevt/Logs/Microsoft-Windows-USB-USBHUB3%4Operational.evtx",
     "System32/winevt/Logs/Microsoft-Windows-Partition%4Diagnostic.evtx",
+    "System32/winevt/Logs/Microsoft-Windows-User Profile Service%4Operational.evtx",
 )
 
 WINDOWS_DEFAULT_ARTIFACT_PATHS = WINDOWS_DEFAULT_LOG_PATHS
@@ -184,6 +185,27 @@ FILE_EVENT_IDS = {
     5156,
     5158,
 }
+
+# --- Logon / session tracing -------------------------------------------------
+# Windows Security log event IDs relevant to interactive/RDP logon sessions.
+LOGON_SUCCESS_EVENT_ID = 4624
+LOGOFF_EVENT_IDS = {4634, 4647}
+LOGON_EVENT_IDS = {LOGON_SUCCESS_EVENT_ID, *LOGOFF_EVENT_IDS}
+
+# LogonType 2 = Interactive (physical console), 10 = RemoteInteractive (RDP).
+# These are the only logon types considered "physical/interactive" for
+# accountability purposes; other logon types (service, batch, network, etc.)
+# are noisy and not attributable to a person sitting at the machine.
+INTERACTIVE_LOGON_TYPES = {"2", "10"}
+LOGON_TYPE_LABELS = {
+    "2": "Interactive (console)",
+    "10": "RemoteInteractive (RDP)",
+}
+
+# Fallback source used when Security.evtx is cleared/unavailable.
+PROFILE_SERVICE_CHANNEL_HINT = "user profile service"
+PROFILE_LOAD_EVENT_ID = 2
+PROFILE_UNLOAD_EVENT_ID = 4
 
 
 @dataclass
@@ -383,6 +405,55 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
     activity_stage = "observed"
     confidence = 0.15
 
+    # --- Logon / logoff classification (Security.evtx 4624/4634/4647, and the
+    # User Profile Service fallback channel 2/4) is evaluated first since it's
+    # a precise, event-ID-driven signal rather than a keyword heuristic.
+    event_data = event.get("event_data") or {}
+    logon_type = event_data.get("LogonType")
+    is_security_channel = "security" in str(event.get("channel") or "").lower()
+    is_profile_service_channel = PROFILE_SERVICE_CHANNEL_HINT in str(event.get("channel") or "").lower() or (
+        "user profile service" in provider
+    )
+
+    if event_id == LOGON_SUCCESS_EVENT_ID and is_security_channel:
+        if logon_type in INTERACTIVE_LOGON_TYPES:
+            tags.append("session")
+            indicators.append(f"event_id:{event_id}")
+            indicators.append(f"logon_type:{logon_type}")
+            activity_type = "logon_success"
+            activity_stage = "logon"
+            confidence = 0.95
+        else:
+            # Non-interactive logon (service/network/batch/etc). Still tagged
+            # as observed so it doesn't get mis-picked-up elsewhere, but not
+            # treated as an interactive session start.
+            tags.append("logon_noninteractive")
+            indicators.append(f"event_id:{event_id}")
+            indicators.append(f"logon_type:{logon_type}")
+            activity_type = "logon_noninteractive"
+            activity_stage = "logon"
+            confidence = 0.4
+    elif event_id in LOGOFF_EVENT_IDS and is_security_channel:
+        tags.append("session")
+        indicators.append(f"event_id:{event_id}")
+        activity_type = "logoff"
+        activity_stage = "logoff"
+        confidence = 0.9
+    elif is_profile_service_channel and event_id == PROFILE_LOAD_EVENT_ID:
+        tags.append("session")
+        indicators.append(f"event_id:{event_id}")
+        indicators.append("source:profile_service_fallback")
+        activity_type = "profile_load"
+        activity_stage = "logon"
+        confidence = 0.7
+    elif is_profile_service_channel and event_id == PROFILE_UNLOAD_EVENT_ID:
+        tags.append("session")
+        indicators.append(f"event_id:{event_id}")
+        indicators.append("source:profile_service_fallback")
+        activity_type = "profile_unload"
+        activity_stage = "logoff"
+        confidence = 0.7
+
     if provider and any(hint in provider for hint in USB_PROVIDER_HINTS):
         tags.append("usb")
         indicators.append(f"provider:{provider}")
@@ -413,7 +484,6 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
         indicators.append(f"event_id:{event_id}")
         confidence = max(confidence, 0.82)
 
-    event_data = event.get("event_data") or {}
     for field in ("ObjectName", "TargetFilename", "SourceFilename", "DestinationFilename", "FileName", "ShareName", "DeviceName"):
         if event_data.get(field):
             indicators.append(f"field:{field}")
@@ -425,37 +495,42 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
         indicators.append("field:user")
         confidence = max(confidence, 0.8)
 
-    if "external device" in text or "new external device" in text or event_id == 6416:
-        activity_type = "usb_connected"
-        activity_stage = "connected"
-        confidence = max(confidence, 0.95)
-    elif "mounted" in text or "volume" in text or "drive letter" in text:
-        activity_type = "usb_mounted"
-        activity_stage = "mounted"
-        confidence = max(confidence, 0.85)
-    elif "eject" in text or "remove" in text or "disconnect" in text or "unplug" in text:
-        activity_type = "usb_removed"
-        activity_stage = "removed"
-        confidence = max(confidence, 0.84)
-    elif any(token in text for token in ("completed", "success", "finished")) and "file_transfer" in tags:
-        activity_type = "file_transfer_completed"
-        activity_stage = "completed"
-        confidence = max(confidence, 0.85)
-    elif "file_transfer" in tags:
-        activity_type = "file_transfer_initiated"
-        activity_stage = "initiated"
-        confidence = max(confidence, 0.8)
-    elif "clipboard" in tags and any(token in text for token in ("paste", "pasted")):
-        activity_type = "clipboard_paste"
-        activity_stage = "observed"
-        confidence = max(confidence, 0.8)
-    elif "clipboard" in tags and any(token in text for token in ("copy", "copied", "cut")):
-        activity_type = "clipboard_copy"
-        activity_stage = "observed"
-        confidence = max(confidence, 0.8)
-    elif "usb" in tags:
-        activity_type = "usb_activity"
-        activity_stage = "detected"
+    # USB connection/mount/removal staging is only inferred from keywords when
+    # the event hasn't already been classified as a logon/logoff/session event
+    # above, so a Security-log logon event never gets overwritten by an
+    # incidental keyword match (e.g. "device" appearing in an unrelated field).
+    if activity_type == "log_event":
+        if "external device" in text or "new external device" in text or event_id == 6416:
+            activity_type = "usb_connected"
+            activity_stage = "connected"
+            confidence = max(confidence, 0.95)
+        elif "mounted" in text or "volume" in text or "drive letter" in text:
+            activity_type = "usb_mounted"
+            activity_stage = "mounted"
+            confidence = max(confidence, 0.85)
+        elif "eject" in text or "remove" in text or "disconnect" in text or "unplug" in text:
+            activity_type = "usb_removed"
+            activity_stage = "removed"
+            confidence = max(confidence, 0.84)
+        elif any(token in text for token in ("completed", "success", "finished")) and "file_transfer" in tags:
+            activity_type = "file_transfer_completed"
+            activity_stage = "completed"
+            confidence = max(confidence, 0.85)
+        elif "file_transfer" in tags:
+            activity_type = "file_transfer_initiated"
+            activity_stage = "initiated"
+            confidence = max(confidence, 0.8)
+        elif "clipboard" in tags and any(token in text for token in ("paste", "pasted")):
+            activity_type = "clipboard_paste"
+            activity_stage = "observed"
+            confidence = max(confidence, 0.8)
+        elif "clipboard" in tags and any(token in text for token in ("copy", "copied", "cut")):
+            activity_type = "clipboard_copy"
+            activity_stage = "observed"
+            confidence = max(confidence, 0.8)
+        elif "usb" in tags:
+            activity_type = "usb_activity"
+            activity_stage = "detected"
 
     if not tags:
         tags.append("observed")
@@ -1160,6 +1235,213 @@ def _collect_events_from_paths(log_paths: Sequence[str], source_kind: str) -> Tu
     return parsed_logs, scanned_paths
 
 
+# --- Logon session parsing / correlation ------------------------------------
+
+def _parse_iso_timestamp(value: Optional[str]):
+    """Best-effort parse of an EVTX SystemTime-style ISO string to a datetime.
+
+    Returns None if the value is missing or unparseable; callers must treat a
+    None timestamp as "unknown" and not assume ordering against it.
+    """
+    if not value:
+        return None
+
+    from datetime import datetime
+
+    text = str(value).strip()
+    # EVTX SystemTime is typically like "2026-01-05T14:32:10.1234567Z".
+    # Python's fromisoformat (pre-3.11) can't handle >6 fractional digits or
+    # a trailing "Z", so normalize both before parsing.
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if "." in text:
+        head, _, rest = text.partition(".")
+        # rest may look like "1234567+00:00" or "1234567"
+        frac = ""
+        tz = ""
+        for index, char in enumerate(rest):
+            if char in "+-" and index > 0:
+                frac, tz = rest[:index], rest[index:]
+                break
+        else:
+            frac, tz = rest, ""
+        frac = (frac + "000000")[:6]
+        text = f"{head}.{frac}{tz}"
+
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def parse_logon_sessions(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build interactive logon sessions from already-normalized Security-log events.
+
+    Expects events already produced by `_normalize_event` (i.e. the output of
+    `parse_event_log`/`analyze_event_logs`'s internal collection step), so this
+    reuses the existing EVTX parsing path rather than re-reading the log file.
+
+    Groups Event ID 4624 (logon success, LogonType 2/10 only) by the target
+    Logon ID, then finds the earliest matching 4634/4647 (logoff) for that
+    same Logon ID to build a [logon_time, logoff_time] session window.
+    """
+    logon_events = [event for event in events if event.get("activity_type") == "logon_success"]
+    logoff_events = [event for event in events if event.get("activity_type") == "logoff"]
+
+    # Index logoffs by Logon ID for O(1) lookup; a given Logon ID should only
+    # log off once, but keep a list in case of duplicate/noisy entries and
+    # take the earliest by timestamp.
+    logoffs_by_logon_id: Dict[str, List[Dict[str, Any]]] = {}
+    for event in logoff_events:
+        logon_id = (event.get("event_data") or {}).get("TargetLogonId") or event.get("logon_id")
+        if not logon_id:
+            continue
+        logoffs_by_logon_id.setdefault(str(logon_id), []).append(event)
+
+    sessions: List[Dict[str, Any]] = []
+    for event in logon_events:
+        event_data = event.get("event_data") or {}
+        logon_id = event_data.get("TargetLogonId") or event.get("logon_id")
+        if not logon_id:
+            # Without a Logon ID we can't correlate this session to anything
+            # later, so skip it rather than emit a session we can't close out.
+            continue
+        logon_id = str(logon_id)
+
+        matching_logoffs = sorted(
+            logoffs_by_logon_id.get(logon_id, []),
+            key=lambda logoff_event: str(logoff_event.get("timestamp") or ""),
+        )
+        logoff_event = matching_logoffs[0] if matching_logoffs else None
+
+        logon_type = event_data.get("LogonType")
+        sessions.append(
+            {
+                "logon_id": logon_id,
+                "user_name": event.get("user_name"),
+                "user_domain": event.get("user_domain"),
+                "user_summary": (event.get("user_context") or {}).get("user_summary"),
+                "logon_type": logon_type,
+                "logon_type_label": LOGON_TYPE_LABELS.get(str(logon_type), f"Type {logon_type}"),
+                "logon_time": event.get("timestamp"),
+                "logoff_time": logoff_event.get("timestamp") if logoff_event else None,
+                "logon_event_id": event.get("event_id"),
+                "logoff_event_id": logoff_event.get("event_id") if logoff_event else None,
+                "source": "security_log",
+                "logon_record_id": event.get("record_id"),
+                "logoff_record_id": logoff_event.get("record_id") if logoff_event else None,
+                "attributed_usb_event_indicators": [],
+            }
+        )
+
+    return sessions
+
+
+def parse_profile_service_fallback(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build best-effort sessions from the User Profile Service fallback channel.
+
+    Used only when the Security log is cleared/unavailable and no
+    `parse_logon_sessions` results were produced. This channel doesn't carry a
+    Logon ID, so sessions are correlated by user + nearest following unload
+    event rather than a shared session identifier. Attribution confidence for
+    fallback sessions is intentionally lower and callers should label these
+    distinctly from Security-log-derived sessions.
+    """
+    load_events = [event for event in events if event.get("activity_type") == "profile_load"]
+    unload_events = sorted(
+        (event for event in events if event.get("activity_type") == "profile_unload"),
+        key=lambda event: str(event.get("timestamp") or ""),
+    )
+
+    sessions: List[Dict[str, Any]] = []
+    consumed_unload_indices: set = set()
+
+    for load_event in load_events:
+        user_summary = (load_event.get("user_context") or {}).get("user_summary")
+        load_time = str(load_event.get("timestamp") or "")
+
+        matched_unload = None
+        matched_index = None
+        for index, unload_event in enumerate(unload_events):
+            if index in consumed_unload_indices:
+                continue
+            unload_user_summary = (unload_event.get("user_context") or {}).get("user_summary")
+            unload_time = str(unload_event.get("timestamp") or "")
+            if unload_user_summary == user_summary and unload_time >= load_time:
+                matched_unload = unload_event
+                matched_index = index
+                break
+
+        if matched_index is not None:
+            consumed_unload_indices.add(matched_index)
+
+        sessions.append(
+            {
+                "logon_id": None,
+                "user_name": load_event.get("user_name"),
+                "user_domain": load_event.get("user_domain"),
+                "user_summary": user_summary,
+                "logon_type": None,
+                "logon_type_label": "Unknown (profile service fallback)",
+                "logon_time": load_event.get("timestamp"),
+                "logoff_time": matched_unload.get("timestamp") if matched_unload else None,
+                "logon_event_id": load_event.get("event_id"),
+                "logoff_event_id": matched_unload.get("event_id") if matched_unload else None,
+                "source": "profile_service_fallback",
+                "logon_record_id": load_event.get("record_id"),
+                "logoff_record_id": matched_unload.get("record_id") if matched_unload else None,
+                "attributed_usb_event_indicators": [],
+            }
+        )
+
+    return sessions
+
+
+def correlate_usb_events_with_sessions(
+    usb_events: Sequence[Dict[str, Any]], sessions: Sequence[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Attach attributed-user info to USB events whose timestamp falls within a session window.
+
+    Returns (attributed_usb_events, updated_sessions). USB events are copied
+    (not mutated in place) before annotation. A session with no logoff_time is
+    treated as still-open, i.e. it covers everything from logon_time onward,
+    since we have no evidence the session ended.
+    """
+    parsed_sessions = []
+    for session in sessions:
+        logon_dt = _parse_iso_timestamp(session.get("logon_time"))
+        logoff_dt = _parse_iso_timestamp(session.get("logoff_time"))
+        parsed_sessions.append((session, logon_dt, logoff_dt))
+
+    attributed_usb_events: List[Dict[str, Any]] = []
+    for usb_event in usb_events:
+        usb_dt = _parse_iso_timestamp(usb_event.get("timestamp"))
+        annotated = dict(usb_event)
+        annotated["attributed_user_summary"] = None
+        annotated["attributed_logon_id"] = None
+        annotated["attributed_session_source"] = None
+
+        if usb_dt is not None:
+            for session, logon_dt, logoff_dt in parsed_sessions:
+                if logon_dt is None or usb_dt < logon_dt:
+                    continue
+                if logoff_dt is not None and usb_dt > logoff_dt:
+                    continue
+                # Session window matches (or session is still open); attribute
+                # this USB event to it.
+                annotated["attributed_user_summary"] = session.get("user_summary")
+                annotated["attributed_logon_id"] = session.get("logon_id")
+                annotated["attributed_session_source"] = session.get("source")
+                session["attributed_usb_event_indicators"].append(
+                    usb_event.get("record_id") or usb_event.get("indicators") or "usb_event"
+                )
+                break
+
+        attributed_usb_events.append(annotated)
+
+    return attributed_usb_events, [session for session, _, _ in parsed_sessions]
+
+
 def analyze_event_logs(
     log_paths: Optional[Sequence[str]] = None,
     limit: int = 100,
@@ -1183,6 +1465,17 @@ def analyze_event_logs(
     registry_events = _select_events(events, lambda event: event.get("source_kind") == "registry_hive")
     prefetch_events = _select_events(events, lambda event: event.get("source_kind") == "prefetch")
     browser_history_events = _select_events(events, lambda event: event.get("source_kind") == "browser_history")
+
+    # --- Session trace: build sessions from Security.evtx first; fall back to
+    # the User Profile Service channel only if no Security-log sessions were
+    # found (e.g. the Security log was cleared or is unavailable).
+    logon_sessions = parse_logon_sessions(events)
+    session_trace_source = "security_log"
+    if not logon_sessions:
+        logon_sessions = parse_profile_service_fallback(events)
+        session_trace_source = "profile_service_fallback" if logon_sessions else "none"
+
+    usb_connected_events, logon_sessions = correlate_usb_events_with_sessions(usb_connected_events, logon_sessions)
 
     activity_counts = _summarize_activity(events)
     user_counts = _summarize_users(events)
@@ -1223,6 +1516,9 @@ def analyze_event_logs(
         "prefetch_events": prefetch_events[:limit],
         "browser_history_events": browser_history_events[:limit],
         "user_attribution_events": user_attribution_events[:limit],
+        "logon_sessions": logon_sessions[:limit],
+        "session_trace_source": session_trace_source,
+        "session_count": len(logon_sessions),
         "summary": {
             "event_count": len(events),
             "usb_connection_count": len(usb_connected_events),
@@ -1239,6 +1535,8 @@ def analyze_event_logs(
             "user_attribution_count": len(user_attribution_events),
             "unique_users": len(user_counts),
             "logs_scanned": len(scanned_paths),
+            "session_count": len(logon_sessions),
+            "session_trace_source": session_trace_source,
         },
     }
 
@@ -1298,6 +1596,8 @@ def analyze_uploaded_artifact(
             "browser_history_events_found": event_log_scan["summary"].get("browser_history_event_count", 0),
             "user_attributions_found": event_log_scan["summary"]["user_attribution_count"],
             "uploaded_log_events_found": len(uploaded_events),
+            "session_count": event_log_scan["summary"].get("session_count", 0),
+            "session_trace_source": event_log_scan["summary"].get("session_trace_source", "none"),
         },
     }
 
@@ -1336,6 +1636,8 @@ def persist_log_analysis(analysis: Dict[str, Any], source_path: Optional[str] = 
         "file_transfer_started_count": event_scan.get("summary", {}).get("file_transfer_started_count") or event_scan.get("file_transfer_started_count") or 0,
         "file_transfer_completed_count": event_scan.get("summary", {}).get("file_transfer_completed_count") or event_scan.get("file_transfer_completed_count") or 0,
         "user_attribution_count": event_scan.get("summary", {}).get("user_attribution_count") or event_scan.get("user_attribution_count") or 0,
+        "session_count": event_scan.get("summary", {}).get("session_count") or event_scan.get("session_count") or 0,
+        "session_trace_source": event_scan.get("summary", {}).get("session_trace_source") or event_scan.get("session_trace_source") or "none",
         "activity_counts": event_scan.get("activity_counts") or {},
         "user_counts": event_scan.get("user_counts") or [],
         "summary": summary,
@@ -1350,7 +1652,7 @@ def persist_log_analysis(analysis: Dict[str, Any], source_path: Optional[str] = 
         session_rows = getattr(session_response, "data", []) or []
         session_row = session_rows[0] if session_rows else {}
         session_id = session_row.get("id")
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to insert log_analysis_sessions row")
         return {"ok": False, "error": str(exc), "session": None, "events_inserted": 0}
 
@@ -1372,12 +1674,31 @@ def persist_log_analysis(analysis: Dict[str, Any], source_path: Optional[str] = 
                 inserted += len(chunk)
             except Exception:
                 # keep local results even if detailed inserts fail
+                logger.exception("Failed to insert a log_events chunk")
+                continue
+
+    sessions_inserted = 0
+    logon_sessions = event_scan.get("logon_sessions") or []
+    if logon_sessions:
+        session_rows_payload = [
+            _logon_session_row_payload(session_id, analysis.get("case_id"), session)
+            for session in logon_sessions
+        ]
+        for chunk in _chunked(session_rows_payload, size=100):
+            try:
+                client.table("logon_sessions").insert(_safe_value(chunk)).execute()
+                sessions_inserted += len(chunk)
+            except Exception:
+                # keep local results even if the logon_sessions table is
+                # missing or the insert otherwise fails
+                logger.exception("Failed to insert a logon_sessions chunk")
                 continue
 
     return {
         "ok": True,
         "session": session_row,
         "events_inserted": inserted,
+        "logon_sessions_inserted": sessions_inserted,
     }
 
 
@@ -1409,6 +1730,21 @@ def _event_row_payload(session_id: Optional[int], case_id: Optional[str], event:
         "system_data": event.get("system_data") or {},
         "user_context": event.get("user_context") or {},
         "raw_xml": event.get("raw_xml"),
+    }
+
+
+def _logon_session_row_payload(session_id: Optional[int], case_id: Optional[str], session: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "case_id": case_id,
+        "logon_id": session.get("logon_id"),
+        "user_name": session.get("user_name"),
+        "user_domain": session.get("user_domain"),
+        "logon_type": str(session.get("logon_type")) if session.get("logon_type") is not None else None,
+        "logon_time": session.get("logon_time"),
+        "logoff_time": session.get("logoff_time"),
+        "source": session.get("source"),
+        "attributed_usb_event_indicators": session.get("attributed_usb_event_indicators") or [],
     }
 
 
