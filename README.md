@@ -15,7 +15,7 @@ The latest repository update removed accidentally committed sample evidence from
 | Backend | Flask |
 | Database | Supabase (PostgreSQL) |
 | Frontend | React (Vite) with Tailwind CSS |
-| Core Libraries | pytsk3, Volatility 3, python-evtx, ReportLab |
+| Core Libraries | pytsk3, Volatility 3, python-evtx, python-registry, ReportLab |
 | Authentication | Supabase Auth |
 
 ## Host Prerequisites
@@ -24,25 +24,17 @@ To develop and execute SwiftProbe, install the following software and drivers on
 
 ### 1. Core Runtime Environments
 
-- Python 3.10.x or higher: Primary runtime for forensic modules. During installation, enable `Add to PATH`.
-- Node.js (LTS): Required for the React + Vite frontend development server and npm package management.
 
 ### 2. Forensic System Dependencies
 
 SwiftProbe interacts with raw disk images and memory structures, so these system-level dependencies are required:
 
-- The Sleuth Kit (TSK): Required by `pytsk3`. On Windows, install compiled binaries so Python can interface with NTFS/FAT file systems.
-- Microsoft Visual C++ Build Tools: Required on Windows to compile forensic library extensions during `pip install`.
-- Git: Required for version control and modular team development workflows.
 
 ### 3. Database and API Tools
 
-- Supabase CLI (optional): Useful for managing local database migrations and edge functions.
-- Postman or Insomnia: Recommended for testing Flask API endpoints before React frontend integration.
 
 ### 4. Recommended Development Environment
 
-- Visual Studio Code (VS Code) with the following extensions:
 	- Python (Microsoft)
 	- ES7+ React/Redux/React-Native snippets
 	- Tailwind CSS IntelliSense
@@ -85,23 +77,9 @@ swiftprobe/
 
 ## Current Repository State
 
-- `built.md` now summarizes the implemented hashing, carving, orchestration, API, and dashboard pieces.
-- `task.md` now documents the completed workflow and proper usage steps.
-- `concept.md` explains the forensic workflow behind disk, memory, log, and timeline analysis.
-- `evidence/DATASETS.md` and `evidence/digitalcorpora/README.md` describe local dataset handling and provenance.
-- `.gitignore` blocks raw evidence binaries and extracted dataset folders from being committed.
-- `backend/orchestrator.py` drives the local hash → carve → compare → persist flow.
-- `backend/app.py` exposes the Flask API used by the frontend dashboard.
-- `frontend/src/App.jsx` renders the browser dashboard for pipeline execution, file upload, and review.
-- `frontend/src/services/pipelineApi.js` contains the dashboard API helpers.
 
 ## Core Capabilities
 
-- Evidence ingestion: mount and read Raw/E01 disk images in a read-only state.
-- File carving: recover deleted assets from unallocated space using file signature headers.
-- Memory forensics: extract active network connections and process trees from RAM dumps.
-- Timeline correlation: build a unified chronological sequence of events from MFT and system logs.
-- Reporting: generate cryptographically validated PDF reports of all findings.
 
 ## Evidence Source
 

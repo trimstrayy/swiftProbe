@@ -18,10 +18,10 @@ const initialForm = {
 
 function MetricCard({ label, value, hint }) {
   return (
-    <article className="rounded-2xl border border-white/10 bg-white/6 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.25)] backdrop-blur">
+    <article className="min-w-0 rounded-2xl border border-white/10 bg-white/6 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.25)] backdrop-blur">
       <p className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">{label}</p>
-      <div className="mt-3 text-3xl font-semibold text-white">{value}</div>
-      <p className="mt-2 truncate text-sm text-slate-300" title={hint}>{hint}</p>
+      <div className="mt-3 break-all text-2xl font-semibold leading-snug text-white">{value}</div>
+      <p className="mt-2 break-words text-sm text-slate-300">{hint}</p>
     </article>
   )
 }
@@ -50,7 +50,7 @@ function isTimestampColumn(key) {
 
 function DataTable({ title, rows, emptyText }) {
   return (
-    <section className="rounded-3xl border border-white/10 bg-slate-950/70 p-5 shadow-2xl">
+    <section className="min-w-0 rounded-3xl border border-white/10 bg-slate-950/70 p-5 shadow-2xl">
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-lg font-semibold text-white">{title}</h2>
         <span className="text-sm text-slate-400">{rows.length} rows</span>
@@ -123,6 +123,18 @@ function summarizeEvents(events) {
   })
 }
 
+function summarizeSessions(sessions) {
+  return (sessions ?? []).map((session, index) => ({
+    id: `${session.logon_id ?? index}`,
+    user: session.user_summary ?? 'Unknown user',
+    logon_type: session.logon_type_label ?? 'Unknown',
+    logon_time: session.logon_time ?? '',
+    logoff_time: session.logoff_time ?? 'Still open',
+    source: session.source ?? '',
+    attributed_usb_events: (session.attributed_usb_event_indicators ?? []).length,
+  }))
+}
+
 function LogIntelligencePanel({ logAnalysis }) {
   if (!logAnalysis) {
     return null
@@ -130,26 +142,35 @@ function LogIntelligencePanel({ logAnalysis }) {
 
   const fileMetadata = logAnalysis.file_metadata ?? {}
   const eventScan = logAnalysis.event_log_scan ?? {}
+  const analysisFailed = logAnalysis.ok === false
+  const analysisError = logAnalysis.error ?? ''
   const usbRows = summarizeEvents(eventScan.usb_connection_events)
   const transferRows = summarizeEvents(eventScan.file_transfer_events)
   const uploadedRows = summarizeEvents(logAnalysis.uploaded_events)
+  const hasNoDetectedEvents =
+    !analysisFailed &&
+    (eventScan.event_count ?? 0) === 0 &&
+    (eventScan.usb_connection_count ?? 0) === 0 &&
+    (eventScan.file_transfer_count ?? 0) === 0
 
   return (
     <section className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log intelligence</p>
           <h2 className="mt-2 text-2xl font-semibold text-white">File metadata and device activity</h2>
         </div>
-        <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-          {logAnalysis.error ? 'Log analysis fallback used' : 'Log analysis ready'}
+        <div
+          className={`shrink-0 rounded-2xl px-4 py-3 text-sm ${analysisFailed ? 'border border-rose-400/30 bg-rose-500/15 text-rose-100' : 'border border-cyan-300/20 bg-cyan-300/10 text-cyan-100'}`}
+        >
+          {analysisFailed ? 'Log analysis failed' : 'Log analysis ready'}
         </div>
       </div>
 
       <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="File hash"
-          value={(fileMetadata.hash ?? logAnalysis.summary?.source_hash ?? '').slice(0, 12) || 'n/a'}
+          value={(fileMetadata.hash ?? logAnalysis.summary?.source_hash ?? '').slice(0, 16) || 'n/a'}
           hint={fileMetadata.filename ?? logAnalysis.summary?.source_filename ?? 'Uploaded artifact'}
         />
         <MetricCard
@@ -170,27 +191,30 @@ function LogIntelligencePanel({ logAnalysis }) {
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
-        <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200">
+        <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Metadata summary</p>
           <div className="mt-3 grid gap-2">
-            <p><span className="text-slate-400">Path:</span> {logAnalysis.artifact_path ?? 'n/a'}</p>
-            <p><span className="text-slate-400">Created:</span> {fileMetadata.created_time ?? 'n/a'}</p>
-            <p><span className="text-slate-400">Accessed:</span> {fileMetadata.accessed_time ?? 'n/a'}</p>
-            <p><span className="text-slate-400">Modified:</span> {fileMetadata.modified_time ?? fileMetadata.mtime ?? 'n/a'}</p>
-            <p><span className="text-slate-400">MIME:</span> {fileMetadata.mime_type ?? 'n/a'}</p>
+            <p className="break-all"><span className="text-slate-400">Path:</span> {logAnalysis.artifact_path ?? 'n/a'}</p>
+            <p className="break-words"><span className="text-slate-400">Created:</span> {fileMetadata.created_time ?? 'n/a'}</p>
+            <p className="break-words"><span className="text-slate-400">Accessed:</span> {fileMetadata.accessed_time ?? 'n/a'}</p>
+            <p className="break-words"><span className="text-slate-400">Modified:</span> {fileMetadata.modified_time ?? fileMetadata.mtime ?? 'n/a'}</p>
+            <p className="break-words"><span className="text-slate-400">MIME:</span> {fileMetadata.mime_type ?? 'n/a'}</p>
             <p><span className="text-slate-400">Scanned logs:</span> {Array.isArray(eventScan.logs_scanned) ? eventScan.logs_scanned.length : 0}</p>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200">
+        <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-200">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Activity summary</p>
           <div className="mt-3 grid gap-2">
             <p><span className="text-slate-400">Uploaded EVTX records:</span> {logAnalysis.uploaded_event_count ?? 0}</p>
             <p><span className="text-slate-400">USB matches:</span> {eventScan.usb_connection_count ?? 0}</p>
             <p><span className="text-slate-400">Transfer matches:</span> {eventScan.file_transfer_count ?? 0}</p>
-            <p><span className="text-slate-400">Case ID:</span> {logAnalysis.case_id ?? 'n/a'}</p>
+            <p className="break-words"><span className="text-slate-400">Case ID:</span> {logAnalysis.case_id ?? 'n/a'}</p>
           </div>
-          {logAnalysis.error ? <p className="mt-3 text-rose-100">{logAnalysis.error}</p> : null}
+          {analysisFailed ? <p className="mt-3 break-words text-rose-100">{analysisError}</p> : null}
+          {hasNoDetectedEvents ? (
+            <p className="mt-3 text-slate-400">No USB, transfer, registry, prefetch, or browser-history events were found in this run.</p>
+          ) : null}
         </div>
       </div>
 
@@ -220,24 +244,55 @@ function LogIntelligencePanel({ logAnalysis }) {
   )
 }
 
-function StagePill({ stage, activeStage, completedStages, failed }) {
-  const isActive = stage.id === activeStage
-  const isComplete = completedStages.includes(stage.id)
-  const isFailed = failed && isActive
+function SessionTracePanel({ logAnalysis }) {
+  if (!logAnalysis) {
+    return null
+  }
 
-  const stateClass = isFailed
-    ? 'border-rose-400/40 bg-rose-500/15 text-rose-100'
-    : isComplete
-      ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-100'
-      : isActive
-        ? 'border-cyan-300/50 bg-cyan-300/15 text-cyan-100'
-        : 'border-white/10 bg-white/5 text-slate-400'
+  const eventScan = logAnalysis.event_log_scan ?? {}
+  const sessions = eventScan.logon_sessions ?? []
+  const sessionRows = summarizeSessions(sessions)
+  const sessionSource = eventScan.session_trace_source ?? 'none'
+  const sourceLabel =
+    sessionSource === 'security_log'
+      ? 'Security.evtx (4624/4634/4647)'
+      : sessionSource === 'profile_service_fallback'
+        ? 'User Profile Service fallback (2/4)'
+        : 'No session data available'
 
   return (
-    <div className={`rounded-2xl border px-4 py-3 ${stateClass}`}>
-      <p className="text-xs uppercase tracking-[0.25em] opacity-75">{stage.label}</p>
-      <p className="mt-1 text-sm">{stage.description}</p>
-    </div>
+    <section className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Session trace</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">Logged-in users and session windows</h2>
+        </div>
+        <div className="shrink-0 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+          Source: {sourceLabel}
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <MetricCard
+          label="Sessions found"
+          value={eventScan.session_count ?? sessions.length ?? 0}
+          hint="Interactive (console) or RDP logon sessions reconstructed from the event logs."
+        />
+        <MetricCard
+          label="USB events attributed"
+          value={sessionRows.reduce((total, row) => total + row.attributed_usb_events, 0)}
+          hint="USB connection events whose timestamp fell inside a known session window."
+        />
+      </div>
+
+      <div className="mt-6">
+        <DataTable
+          title="Logon Sessions"
+          rows={sessionRows}
+          emptyText="No interactive logon sessions were reconstructed from the available logs."
+        />
+      </div>
+    </section>
   )
 }
 
@@ -392,8 +447,6 @@ export default function App() {
   const [recovered, setRecovered] = useState([])
   const [pipeline, setPipeline] = useState(null)
   const [activeTab, setActiveTab] = useState('carver')
-  const [activeStage, setActiveStage] = useState('idle')
-  const [completedStages, setCompletedStages] = useState([])
   const [runLog, setRunLog] = useState([])
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
@@ -405,36 +458,11 @@ export default function App() {
   const [ramRunning, setRamRunning] = useState(false)
   const ramBusyRef = useRef(false)
 
-  const stages = [
-    { id: 'queued', label: 'Queued', description: 'Pipeline request is prepared and waiting to start.' },
-    { id: 'uploading', label: 'Uploading', description: 'The selected image is copied to the backend upload store.' },
-    { id: 'hashing', label: 'Hashing', description: 'The source image is hashed to confirm evidence integrity.' },
-    { id: 'carving', label: 'Carving', description: 'The carver scans the image and writes extracted files.' },
-    { id: 'orchestrating', label: 'Orchestrating', description: 'Recovered files are hashed, matched, and synced.' },
-    { id: 'complete', label: 'Complete', description: 'Results are ready and the dashboard refreshes.' },
-  ]
-
   const tabClasses = (tabName) =>
     `rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === tabName ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`
 
   const logStage = (message) => {
     setRunLog((current) => [...current, { time: new Date().toLocaleTimeString(), message }])
-  }
-
-  const startRunnerView = () => {
-    setActiveTab('runner')
-    setActiveStage('queued')
-    setCompletedStages([])
-    setRunLog([])
-  }
-
-  const advanceStage = async (nextStage, message) => {
-    setActiveStage(nextStage)
-    if (message) {
-      logStage(message)
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250))
-    setCompletedStages((current) => (current.includes(nextStage) ? current : [...current, nextStage]))
   }
 
   const loadDashboard = async () => {
@@ -477,28 +505,23 @@ export default function App() {
     event.preventDefault()
     setRunning(true)
     setPipeline(null)
-    startRunnerView()
+    setActiveTab('log')
+    setRunLog([])
 
     try {
-      await advanceStage('uploading', selectedFile ? 'Uploading selected evidence file to Flask.' : 'Using the local image path directly.')
-      await advanceStage('hashing', 'The source image hash is being calculated.')
-      await advanceStage('carving', 'The carver is scanning the image for recoverable content.')
-      await advanceStage('orchestrating', 'The orchestrator is comparing carved files to target hashes.')
+      logStage(selectedFile ? 'Uploading selected evidence file to Flask.' : 'Using the local image path directly.')
 
       const result = selectedFile
         ? await runPipelineByUpload({ caseId: form.case_id, file: selectedFile })
         : await runPipelineByPath({ caseId: form.case_id, imagePath: form.image_path })
 
       setPipeline(result)
-      setCompletedStages((current) => [...new Set([...current, 'uploading', 'hashing', 'carving', 'orchestrating', 'complete'])])
-      setActiveStage('complete')
       logStage('Pipeline finished and the dashboard data was refreshed.')
       if (result.ok) {
         await loadDashboard()
       }
     } catch (error) {
       setPipeline({ ok: false, error: error.message })
-      setActiveStage('carving')
       logStage(`Pipeline failed: ${error.message}`)
     } finally {
       setRunning(false)
@@ -591,14 +614,14 @@ export default function App() {
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10">
         <header className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/5 p-8 shadow-[0_30px_100px_rgba(0,0,0,0.35)] backdrop-blur">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-[0.45em] text-cyan-200/80">SwiftProbe</p>
               <h1 className="mt-3 text-4xl font-semibold tracking-tight text-white lg:text-5xl">Evidence pipeline dashboard</h1>
               <p className="mt-4 max-w-3xl text-base leading-7 text-slate-300">
                 Trigger the forensic pipeline, review target hashes, and inspect recovered files from a single app surface.
               </p>
             </div>
-            <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+            <div className="shrink-0 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
               {loading
                 ? 'Refreshing dashboard…'
                 : status?.backend_unreachable
@@ -609,25 +632,13 @@ export default function App() {
         </header>
 
         <section className="flex flex-wrap gap-3 rounded-3xl border border-white/10 bg-slate-950/70 p-3 shadow-2xl">
-          <button
-            type="button"
-            onClick={() => setActiveTab('carver')}
-            className={tabClasses('carver')}
-          >
+          <button type="button" onClick={() => setActiveTab('carver')} className={tabClasses('carver')}>
             File Carver and Orchestration
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('ram')}
-            className={tabClasses('ram')}
-          >
+          <button type="button" onClick={() => setActiveTab('ram')} className={tabClasses('ram')}>
             RAM Module
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('log')}
-            className={tabClasses('log')}
-          >
+          <button type="button" onClick={() => setActiveTab('log')} className={tabClasses('log')}>
             Log Module
           </button>
         </section>
@@ -641,9 +652,9 @@ export default function App() {
             </section>
 
             <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-              <form onSubmit={runPipeline} className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
+              <form onSubmit={runPipeline} className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <h2 className="text-2xl font-semibold text-white">Run evidence pipeline</h2>
                     <p className="mt-2 text-sm text-slate-400">
                       Upload a raw image or use a local path, then hash the file, carve recoverable content, compare against target hashes, and persist recovered rows.
@@ -652,7 +663,7 @@ export default function App() {
                   <button
                     type="submit"
                     disabled={running}
-                    className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="shrink-0 rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {running ? 'Running…' : 'Run Pipeline'}
                   </button>
@@ -664,7 +675,7 @@ export default function App() {
                     <input
                       value={form.image_path}
                       onChange={(event) => setForm((current) => ({ ...current, image_path: event.target.value }))}
-                      className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
+                      className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
                     />
                   </label>
                   <label className="flex flex-col gap-2 text-sm text-slate-300">
@@ -672,7 +683,7 @@ export default function App() {
                     <input
                       value={form.case_id}
                       onChange={(event) => setForm((current) => ({ ...current, case_id: event.target.value }))}
-                      className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
+                      className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
                     />
                   </label>
                 </div>
@@ -680,7 +691,7 @@ export default function App() {
                 <label className="mt-4 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 transition hover:border-cyan-300/60 hover:bg-cyan-300/10">
                   <span className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">Evidence file upload</span>
                   <span className="text-base text-white">Choose a raw image from your device</span>
-                  <span className="text-slate-400">{fileNote}</span>
+                  <span className="break-words text-slate-400">{fileNote}</span>
                   <input type="file" className="hidden" onChange={handleFileChange} accept=".dd,.raw,.img,.bin,.e01,.evtx" />
                 </label>
 
@@ -696,33 +707,34 @@ export default function App() {
                 {pipeline ? (
                   <div className={`mt-6 rounded-2xl border p-4 ${pipeline.ok ? 'border-emerald-400/20 bg-emerald-500/10' : 'border-rose-400/20 bg-rose-500/10'}`}>
                     <p className="text-sm uppercase tracking-[0.35em] text-slate-300">Latest pipeline result</p>
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      <div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <div className="min-w-0">
                         <p className="text-xs text-slate-400">Total carved</p>
                         <p className="text-2xl font-semibold text-white">{pipeline.total_files_carved ?? 0}</p>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-xs text-slate-400">Matches found</p>
                         <p className="text-2xl font-semibold text-white">{pipeline.total_matches_found ?? 0}</p>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-xs text-slate-400">Sync status</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.database_sync_status ?? 'unknown'}</p>
+                        <p className="break-words text-2xl font-semibold text-white">{pipeline.database_sync_status ?? 'unknown'}</p>
                       </div>
                     </div>
                     {pipeline.source_image_hash ? (
                       <div className="mt-4 grid gap-2 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
-                        <p><span className="text-slate-400">Source hash:</span> {pipeline.source_image_hash}</p>
+                        <p className="break-all"><span className="text-slate-400">Source hash:</span> {pipeline.source_image_hash}</p>
                         <p><span className="text-slate-400">Source size:</span> {Number(pipeline.source_image_size ?? 0).toLocaleString()} bytes</p>
-                        {pipeline.stored_path ? <p><span className="text-slate-400">Saved upload:</span> {pipeline.stored_path}</p> : null}
+                        {pipeline.stored_path ? <p className="break-all"><span className="text-slate-400">Saved upload:</span> {pipeline.stored_path}</p> : null}
+                        {pipeline.log_analysis_ok === false ? <p className="break-words text-rose-100">Log analysis failed: {pipeline.log_analysis_error ?? 'Unknown error'}</p> : null}
                       </div>
                     ) : null}
-                    {pipeline.error ? <p className="mt-4 text-sm text-rose-100">{pipeline.error}</p> : null}
+                    {pipeline.error ? <p className="mt-4 break-words text-sm text-rose-100">{pipeline.error}</p> : null}
                   </div>
                 ) : null}
               </form>
 
-              <section className="rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
+              <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
                 <h2 className="text-2xl font-semibold text-white">Operational guidance</h2>
                 <div className="mt-4 space-y-4 text-sm leading-7 text-slate-300">
                   <p>1. Load target hashes into Supabase using the schema from <span className="text-cyan-200">sql.md</span>.</p>
@@ -732,7 +744,7 @@ export default function App() {
                 </div>
                 <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
                   <p className="font-medium text-white">Current status</p>
-                  <p className="mt-2">
+                  <p className="mt-2 break-words">
                     {status?.backend_unreachable
                       ? `Backend unavailable: ${status.error}`
                       : status?.status
@@ -827,10 +839,10 @@ export default function App() {
             <RamAnalysisSection analysisReport={ramAnalysis} />
           </section>
         ) : (
-          <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-            <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
-              <div className="flex items-center justify-between gap-4">
-                <div>
+          <section className="grid gap-6 xl:grid-cols-2">
+            <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log module</p>
                   <h2 className="mt-2 text-3xl font-semibold text-white">File metadata and device activity</h2>
                   <p className="mt-2 text-sm text-slate-400">
@@ -840,24 +852,28 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('carver')}
-                  className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
                 >
                   Open File Carver
                 </button>
               </div>
 
-              <div className="mt-6 grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Metadata</p>
                   <p className="mt-2 text-sm text-slate-200">File hash, timestamps, MIME, and upload details.</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">USB trace</p>
                   <p className="mt-2 text-sm text-slate-200">Event-log search for removable-device connection activity.</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Transfer trace</p>
                   <p className="mt-2 text-sm text-slate-200">Event-log search for file transfer or copy initialization.</p>
+                </div>
+                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Session trace</p>
+                  <p className="mt-2 text-sm text-slate-200">Logon/logoff correlation to attribute USB activity to a user account.</p>
                 </div>
               </div>
 
@@ -867,16 +883,22 @@ export default function App() {
               </div>
             </div>
 
-            <LogIntelligencePanel logAnalysis={logAnalysis} />
+            <div className="xl:col-span-2">
+              <LogIntelligencePanel logAnalysis={logAnalysis} />
+            </div>
 
-            <section className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
+            <div className="xl:col-span-2">
+              <SessionTracePanel logAnalysis={logAnalysis} />
+            </div>
+
+            <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
               <h3 className="text-lg font-semibold text-white">Run log</h3>
               <div className="mt-4 space-y-3">
                 {runLog.length ? (
                   runLog.map((entry, index) => (
-                    <div key={`${entry.time}-${index}`} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                    <div key={`${entry.time}-${index}`} className="min-w-0 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
                       <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
-                      <p className="mt-1">{entry.message}</p>
+                      <p className="mt-1 break-words">{entry.message}</p>
                     </div>
                   ))
                 ) : (
