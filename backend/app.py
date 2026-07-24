@@ -6,7 +6,7 @@ from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 try:
@@ -25,28 +25,24 @@ except ImportError:  # pragma: no cover - supports running from the backend fold
     from modules.log_module import analyze_uploaded_artifact
 
 try:
-<<<<<<< HEAD
     from backend.modules.ram_module import analyze_ram_dump, sanity_check_ram_capture
 except ImportError:  # pragma: no cover - supports running from the backend folder
     from modules.ram_module import analyze_ram_dump, sanity_check_ram_capture
-
-app = Flask(__name__)
-UPLOAD_ROOT = Path("evidence") / "uploads"
-RAM_UPLOAD_ROOT = UPLOAD_ROOT / "ram"
-=======
-    from backend.modules.log_module import analyze_event_logs
-except ImportError:  # pragma: no cover - supports running from the backend folder
-    from modules.log_module import analyze_event_logs
 
 try:
     from backend.hasher import hash_file
 except ImportError:  # pragma: no cover - supports running from the backend folder
     from hasher import hash_file
 
+try:
+    from backend.reports.generator import generate_pdf
+except ImportError:
+    from reports.generator import generate_pdf
+
 app = Flask(__name__)
 UPLOAD_ROOT = Path("evidence") / "uploads"
+RAM_UPLOAD_ROOT = UPLOAD_ROOT / "ram"
 logger = logging.getLogger(__name__)
->>>>>>> c40dda7d65337a957833ece37a3f82b95aa330d5
 
 
 def _json_error(message: str, status_code: int = 400):
@@ -61,11 +57,7 @@ def _get_targets(client):
         response = (
             client.table("target_artifacts")
             .select("filename,expected_sha256,description")
-<<<<<<< HEAD
-            .order("filename")
-=======
-                .order("filename", desc=False)
->>>>>>> c40dda7d65337a957833ece37a3f82b95aa330d5
+            .order("filename", desc=False)
             .execute()
         )
         rows = getattr(response, "data", []) or []
@@ -83,11 +75,7 @@ def _get_recovered(client, case_id: str | None = None):
         query = client.table("files_recovered").select("*")
         if case_id:
             query = query.eq("case_id", case_id)
-<<<<<<< HEAD
-        response = query.order("match_found", desc=True).order("filename").execute()
-=======
         response = query.order("match_found", desc=False).order("filename", desc=False).execute()
->>>>>>> c40dda7d65337a957833ece37a3f82b95aa330d5
         rows = getattr(response, "data", []) or []
         return rows, True, None
     except Exception as exc:
@@ -362,7 +350,9 @@ def run_pipeline_upload():
         ), 500
 
 
-<<<<<<< HEAD
+# ── RAM Module endpoints ───────────────────────────────────────────────────
+
+
 @app.post("/api/ram/sanity")
 def ram_sanity_check():
     payload = request.get_json(silent=True) or {}
@@ -409,7 +399,14 @@ def ram_analyze():
         return jsonify(
             {
                 "ok": False,
-=======
+                "error": str(exc),
+            }
+        ), 500
+
+
+# ── Log Module endpoint ────────────────────────────────────────────────────
+
+
 @app.post("/api/log/analyze")
 def analyze_log_artifacts():
     payload = request.get_json(silent=True) or {}
@@ -449,10 +446,97 @@ def analyze_log_artifacts():
                 "ok": False,
                 "artifact_path": str(artifact_path),
                 "case_id": case_id,
->>>>>>> c40dda7d65337a957833ece37a3f82b95aa330d5
                 "error": str(exc),
             }
         ), 500
+
+
+# ── Report Generator endpoint ──────────────────────────────────────────────
+
+
+@app.post("/api/report/generate")
+def generate_forensic_report():
+    """Generate a court-presentable PDF report from the latest pipeline data.
+
+    Accepts case metadata as JSON body, plus optional pipeline result,
+    log analysis, and RAM analysis payloads.  Returns the PDF file.
+    """
+    payload = request.get_json(silent=True) or {}
+    case_meta = payload.get("case_meta", payload)
+
+    pipeline_result = payload.get("pipeline_result")
+    log_analysis = payload.get("log_analysis")
+    ram_analysis = payload.get("ram_analysis")
+    carved_files = payload.get("carved_files")
+
+    try:
+        pdf_path = generate_pdf(
+            case_meta=case_meta,
+            pipeline_result=pipeline_result,
+            log_analysis=log_analysis,
+            ram_analysis=ram_analysis,
+            carved_files=carved_files,
+        )
+        return send_file(
+            pdf_path,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=Path(pdf_path).name,
+        )
+    except Exception as exc:
+        logger.exception("Report generation failed")
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+            }
+        ), 500
+
+
+@app.post("/api/report/generate-download")
+def generate_report_download():
+    """Generate a PDF report and return it as a direct download.
+
+    Accepts ``case_meta`` as JSON.  Pipeline/analysis data is pulled
+    from the current Supabase state (latest recovered files, targets).
+    This endpoint is simpler than the full ``/api/report/generate``
+    because it does not require pre-submitted analysis payloads.
+    """
+    payload = request.get_json(silent=True) or {}
+    case_meta = payload.get("case_meta", payload)
+
+    # Attempt to pull current data from Supabase for auto-population
+    client = get_supabase_client()
+    recovered_files = []
+    if client is not None:
+        try:
+            resp = client.table("files_recovered").select("*").limit(500).execute()
+            recovered_files = (getattr(resp, "data", []) or [])
+        except Exception:
+            pass
+
+    try:
+        pdf_path = generate_pdf(
+            case_meta=case_meta,
+            carved_files=recovered_files if recovered_files else None,
+        )
+        return send_file(
+            pdf_path,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=Path(pdf_path).name,
+        )
+    except Exception as exc:
+        logger.exception("Report download generation failed")
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+            }
+        ), 500
+
+
+# ── Legacy / Admin endpoints ───────────────────────────────────────────────
 
 
 @app.get("/supabase")
@@ -462,11 +546,9 @@ def supabase_status():
 
 
 if __name__ == "__main__":
-    # NOTE: The reloader (debug=True) spawns a watchdog that monitors the
-    # filesystem. Uploading/processing large forensic captures (e.g. a 510MB
-    # RAM image) triggers file-write events that can restart the worker
-    # mid-request, severing the connection with net::ERR_CONNECTION_RESET
-    # instead of returning a clean 500. We therefore run WITHOUT the reloader.
-    # Debug is kept off so a Volatility subprocess crash cannot kill the worker
-    # and so the dev server behaves closer to a production WSGI server.
+    # NOTE: The reloader spawns a watchdog that monitors the filesystem.
+    # Uploading/processing large forensic captures triggers file-write
+    # events that can restart the worker mid-request, severing the
+    # connection with net::ERR_CONNECTION_RESET instead of returning a
+    # clean 500.  We therefore run WITHOUT the reloader.
     app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)

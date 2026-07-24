@@ -102,3 +102,42 @@ export async function runRamAnalysisByUpload({ caseId, file }) {
 
   return parseJson(response)
 }
+
+// ── Report Generator API ─────────────────────────────────────────────────
+
+export async function generateReport(caseMeta) {
+  const response = await fetch('/api/report/generate-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ case_meta: caseMeta }),
+  })
+
+  if (!response.ok) {
+    const errorData = await parseJson(response).catch(() => ({}))
+    throw new Error(errorData.error || `Report generation failed with status ${response.status}`)
+  }
+
+  // Return the PDF blob for download
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const match = disposition.match(/filename="?(.+?)"?$/)
+  const filename = match ? match[1] : `SwiftProbe_Report_${caseMeta.case_number || 'unknown'}.pdf`
+
+  return { blob, filename }
+}
+
+export async function downloadReport(caseMeta) {
+  const { blob, filename } = await generateReport(caseMeta)
+
+  // Trigger browser download
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(url)
+
+  return { ok: true, filename }
+}

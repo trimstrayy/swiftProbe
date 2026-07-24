@@ -22,15 +22,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-<<<<<<< HEAD
 try:
-    from backend.hasher import hash_file
+    from backend.hasher import hash_file, normalize_sha256
 except ImportError:  # pragma: no cover - supports running from the backend folder
-    from hasher import hash_file
-=======
-from backend.core.supabase_db import get_supabase_client
-from backend.hasher import hash_file, normalize_sha256
->>>>>>> c40dda7d65337a957833ece37a3f82b95aa330d5
+    from hasher import hash_file, normalize_sha256
+
+try:
+    from backend.core.supabase_db import get_supabase_client
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from core.supabase_db import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

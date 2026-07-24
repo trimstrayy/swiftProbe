@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>{{ case.case_number }} — Report of Examination</title>
+<style>
+  /* ============================================================
+     FONT STACK
+     Serif  = Liberation Serif  (metric-compatible w/ Times New Roman —
+              the de-facto expected face for filed legal documents)
+     Mono   = Liberation Mono   (metric-compatible w/ Courier New —
+              used for every hash, timestamp, path, log line)
+     Sans   = Noto Sans / Arial — running headers & labels only
+  ============================================================ */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Liberation Serif", "Times New Roman", serif;
+    font-size: 11.5pt;
+    line-height: 1.45;
+    color: #0B1626;
+  }
+  .mono { font-family: "Liberation Mono", "Courier New", monospace; }
+  .sans { font-family: "Noto Sans", Arial, sans-serif; }
+
+  /* ============================================================
+     PAGE SETUP — A4, native pagination + margin-box page numbers
+  ============================================================ */
+  @page {
+    size: A4;
+    margin: 34mm 16mm 22mm 16mm;
+
+    @top-center {
+      content: "SWIFTPROBE FORENSIC LOG — CONFIDENTIAL WORK PRODUCT";
+      font-family: "Noto Sans", Arial, sans-serif;
+      font-size: 7.5pt;
+      letter-spacing: 0.08em;
+      color: #7c8697;
+    }
+    @bottom-left {
+      content: "Case {{ case.case_number }} \00A0 · \00A0 Doc Control {{ case.doc_control_id }}";
+      font-family: "Liberation Mono", monospace;
+      font-size: 7.5pt;
+      color: #3A4A5E;
+    }
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-family: "Liberation Mono", monospace;
+      font-size: 7.5pt;
+      color: #3A4A5E;
+    }
+  }
+
+  /* running header repeated on every page via the page-header element */
+  .page-header {
+    position: fixed;
+    top: -26mm;
+    left: 0;
+    right: 0;
+    height: 20mm;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1.25pt solid #0B1626;
+    padding-bottom: 3mm;
+  }
+  .page-header .org {
+    font-family: "Liberation Serif", serif;
+    font-size: 13pt;
+    color: #0B1626;
+  }
+  .page-header .org small {
+    display: block;
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 7.5pt;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6b7385;
+  }
+  .page-header .contact {
+    text-align: right;
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 7.5pt;
+    color: #6b7385;
+    line-height: 1.5;
+  }
+
+  /* ============================================================
+     WATERMARK — repeats on every page (fixed + full-bleed)
+  ============================================================ */
+  .watermark {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: -1;
+    overflow: hidden;
+  }
+  .watermark span {
+    display: block;
+    transform: rotate(-38deg);
+    font-family: "Liberation Serif", serif;
+    font-weight: 700;
+    font-size: 52pt;
+    letter-spacing: 0.14em;
+    color: #0B1626;
+    opacity: 0.055;
+    white-space: nowrap;
+  }
+  .watermark.blank span { color: #A3241D; opacity: 0.09; font-size: 40pt; }
+
+  /* ============================================================
+     TITLE BLOCK
+  ============================================================ */
+  .cover-title {
+    text-align: center;
+    padding-bottom: 6mm;
+    margin-bottom: 6mm;
+    border-bottom: 2.25pt double #0B1626;
+  }
+  .cover-title .eyebrow {
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 8pt;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: #A9781F;
+  }
+  .cover-title h1 {
+    margin: 2mm 0 1mm 0;
+    font-size: 20pt;
+    font-weight: 700;
+  }
+  .cover-title .subtitle {
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 9pt;
+    color: #3A4A5E;
+  }
+
+  /* ============================================================
+     SECTIONS
+  ============================================================ */
+  h2.section {
+    font-size: 12.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1pt solid #0B1626;
+    padding-bottom: 1.5mm;
+    margin: 7mm 0 3mm 0;
+  }
+  h2.section .num {
+    font-family: "Liberation Mono", monospace;
+    color: #A9781F;
+    margin-right: 2mm;
+  }
+  h3.subsection {
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 9pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #3A4A5E;
+    margin: 4mm 0 1.5mm 0;
+  }
+  p { margin: 0 0 2.5mm 0; text-align: justify; }
+  .note {
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 8.5pt;
+    color: #6b7385;
+    font-style: italic;
+  }
+
+  /* ============================================================
+     KEY-VALUE META GRID
+  ============================================================ */
+  .meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 8mm;
+    margin-bottom: 2mm;
+  }
+  .meta-grid .row {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 0.5pt dotted #b8bfc9;
+    padding: 1mm 0;
+    font-size: 10pt;
+  }
+  .meta-grid .row .k { color: #3A4A5E; }
+  .meta-grid .row .v { font-family: "Liberation Mono", monospace; text-align: right; }
+
+  /* ============================================================
+     TABLES — fixed layout, monospace hash/timestamp columns,
+     never break a row across a page
+  ============================================================ */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9pt; }
+  thead { display: table-header-group; }
+  th {
+    text-align: left;
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 7.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #3A4A5E;
+    border-bottom: 1pt solid #0B1626;
+    padding: 1.5mm 2mm;
+  }
+  td {
+    padding: 1.5mm 2mm;
+    border-bottom: 0.5pt dotted #cfd4dc;
+    vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: break-all;
+  }
+  tr, .avoid-break { break-inside: avoid; page-break-inside: avoid; }
+  .status {
+    display: inline-block;
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 7.5pt;
+    font-weight: 700;
+    padding: 0.5mm 1.5mm;
+    border: 0.75pt solid currentColor;
+    border-radius: 1.5pt;
+  }
+  .status.active   { color: #1E5C43; }
+  .status.deleted   { color: #A3241D; }
+  .status.carved   { color: #A9781F; }
+
+  /* ============================================================
+     CHRONOLOGY FEED
+  ============================================================ */
+  .chrono { list-style: none; margin: 0; padding: 0; border-left: 1pt solid #c9cdd6; margin-left: 1mm; }
+  .chrono li {
+    position: relative;
+    padding: 0 0 3mm 5mm;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .chrono li::before {
+    content: "";
+    position: absolute;
+    left: -2.2mm;
+    top: 1.2mm;
+    width: 2.6mm;
+    height: 2.6mm;
+    border-radius: 50%;
+    background: #fff;
+    border: 1pt solid #0B1626;
+  }
+  .chrono .ts { font-family: "Liberation Mono", monospace; font-size: 8.5pt; color: #3A4A5E; }
+  .chrono .tag {
+    font-family: "Noto Sans", Arial, sans-serif;
+    font-size: 7pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 0.3mm 1.3mm;
+    border: 0.75pt solid #0B1626;
+    margin-left: 2mm;
+  }
+  .chrono .actor { font-family: "Liberation Mono", monospace; font-size: 8.5pt; color: #0B1626; margin-left: 2mm; }
+  .chrono .detail { margin-top: 0.5mm; font-size: 9.5pt; }
+  .chrono .src { float: right; font-family: "Noto Sans", Arial, sans-serif; font-size: 7.5pt; font-style: italic; color: #9099a8; }
+
+  /* ============================================================
+     CHAIN OF CUSTODY
+  ============================================================ */
+  .coc-table td, .coc-table th { font-size: 8.5pt; }
+
+  /* ============================================================
+     SIGNATURE / DECLARATION
+  ============================================================ */
+  .declaration-box {
+    margin-top: 5mm;
+    padding: 3mm 4mm;
+    border: 0.75pt solid #0B1626;
+    background: rgba(11,22,38,0.02);
+    font-size: 9.5pt;
+  }
+  .sig-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6mm;
+    margin-top: 6mm;
+    break-inside: avoid;
+  }
+  .sig-line { border-bottom: 0.75pt solid #0B1626; height: 11mm; }
+  .sig-caption { font-family: "Noto Sans", Arial, sans-serif; font-size: 8pt; color: #3A4A5E; margin-top: 1mm; }
+  .sig-caption b { color: #0B1626; }
+
+  /* ============================================================
+     GLOSSARY
+  ============================================================ */
+  .glossary dt { font-family: "Liberation Mono", monospace; font-weight: 700; font-size: 9pt; margin-top: 2mm; }
+  .glossary dd { margin: 0.5mm 0 0 0; font-size: 9.5pt; }
+
+  .page-break { break-before: page; page-break-before: always; }
+</style>
+</head>
+<body>
+
+  <div class="watermark{% if is_blank %} blank{% endif %}"><span>{{ watermark_text }}</span></div>
+
+  <div class="page-header">
+    <div class="org">
+      SwiftProbe
+      <small>Digital Forensics Toolkit &nbsp;·&nbsp; Estd. 2026</small>
+    </div>
+    <div class="contact">
+      {{ case.organization }}<br/>
+      evidence@swiftprobe-forensics.example &nbsp;·&nbsp; +977-1-555-0142
+    </div>
+  </div>
+
+  <!-- ===================== COVER / TITLE ===================== -->
+  <div class="cover-title">
+    <div class="eyebrow">Confidential — Prepared for Legal Proceedings</div>
+    <h1>Report of Examination</h1>
+    <div class="subtitle mono">Case {{ case.case_number }} &nbsp;·&nbsp; Report Date {{ case.report_date }} &nbsp;·&nbsp; Doc Control {{ case.doc_control_id }}</div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="row"><span class="k">Case Number</span><span class="v">{{ case.case_number }}</span></div>
+    <div class="row"><span class="k">Date of Report</span><span class="v">{{ case.report_date }}</span></div>
+    <div class="row"><span class="k">Lead Investigator</span><span class="v">{{ case.investigator_name }}</span></div>
+    <div class="row"><span class="k">Credentials</span><span class="v">{{ case.credentials }}</span></div>
+    <div class="row"><span class="k">Examining Organization</span><span class="v">{{ case.organization }}</span></div>
+    <div class="row"><span class="k">Target Machine</span><span class="v">{{ case.target_machine }}</span></div>
+    <div class="row"><span class="k">Asset ID</span><span class="v">{{ case.asset_id }}</span></div>
+    <div class="row"><span class="k">Date of Analysis</span><span class="v">{{ case.date_of_analysis }}</span></div>
+    <div class="row"><span class="k">Incident Window (Start)</span><span class="v">{{ case.incident_window_start }}</span></div>
+    <div class="row"><span class="k">Incident Window (End)</span><span class="v">{{ case.incident_window_end }}</span></div>
+  </div>
+
+  <!-- ===================== 1. REQUEST ===================== -->
+  <h2 class="section"><span class="num">01</span>Request & Authority for Examination</h2>
+  <div class="meta-grid">
+    <div class="row"><span class="k">Date of Request</span><span class="v">{{ request.date }}</span></div>
+    <div class="row"><span class="k">Requestor</span><span class="v">{{ request.requestor_name }}</span></div>
+    <div class="row"><span class="k">Requesting Organization</span><span class="v">{{ request.requestor_org }}</span></div>
+    <div class="row"><span class="k">Authority</span><span class="v">{{ request.authority }}</span></div>
+  </div>
+  <p>{{ request.purpose }}</p>
+
+  <!-- ===================== 2. CHAIN OF CUSTODY ===================== -->
+  <h2 class="section"><span class="num">02</span>Evidence Received & Chain of Custody</h2>
+  <p class="note">Contemporaneous record of every item received and every custody transfer, per SWGDE Best Practices for Digital Evidence Collection.</p>
+  <table class="coc-table">
+    <colgroup>
+      <col style="width:12%"><col style="width:20%"><col style="width:24%">
+      <col style="width:14%"><col style="width:15%"><col style="width:15%">
+    </colgroup>
+    <thead>
+      <tr><th>Item ID</th><th>Description</th><th>Identifier / Hash</th><th>Date / Time</th><th>Action</th><th>Custodian</th></tr>
+    </thead>
+    <tbody>
+      {% for c in chain_of_custody %}
+      <tr>
+        <td class="mono">{{ c.item_id }}</td>
+        <td>{{ c.description }}</td>
+        <td class="mono">{{ c.identifier }}</td>
+        <td class="mono">{{ c.datetime }}</td>
+        <td>{{ c.action }}</td>
+        <td class="mono">{{ c.custodian }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ===================== 3. EXECUTIVE SUMMARY ===================== -->
+  <h2 class="section"><span class="num">03</span>Executive Summary</h2>
+  <p>{{ executive_summary }}</p>
+
+  <!-- ===================== 4. TOOLS & METHODOLOGY ===================== -->
+  <h2 class="section"><span class="num">04</span>Scope, Tools & Methodology</h2>
+  <p>{{ methodology.scope }}</p>
+  <table>
+    <colgroup><col style="width:28%"><col style="width:15%"><col style="width:57%"></colgroup>
+    <thead><tr><th>Tool</th><th>Version</th><th>Purpose / Applied To</th></tr></thead>
+    <tbody>
+      {% for t in methodology.tools %}
+      <tr><td class="mono">{{ t.name }}</td><td class="mono">{{ t.version }}</td><td>{{ t.purpose }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h3 class="subsection">Validation Statement</h3>
+  <p>{{ methodology.validation_statement }}</p>
+  <h3 class="subsection">Deviations from Standard Operating Procedure</h3>
+  <p>{{ methodology.deviations }}</p>
+
+  <!-- ===================== 5. MODULE AGGREGATION ===================== -->
+  <h2 class="section"><span class="num">05</span>Module Aggregation Summary</h2>
+  <table>
+    <colgroup><col style="width:25%"><col style="width:25%"><col style="width:25%"><col style="width:25%"></colgroup>
+    <thead><tr>{% for m in module_summary %}<th>{{ m.label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      <tr>
+        {% for m in module_summary %}
+        <td>
+          {% for stat in m.stats %}
+          <div style="display:flex;justify-content:space-between;"><span>{{ stat.label }}</span><span class="mono">{{ stat.value }}</span></div>
+          {% endfor %}
+        </td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ===================== 6. CHRONOLOGY ===================== -->
+  <div class="page-break"></div>
+  <h2 class="section"><span class="num">06</span>Master Forensic Chronology</h2>
+  <p class="note">Unified, chronologically sorted timeline merged from Log, Memory, and File Carver module outputs.</p>
+  <ol class="chrono">
+    {% for e in chronology %}
+    <li>
+      <span class="ts">{{ e.timestamp }}</span><span class="tag">{{ e.type }}</span><span class="actor">{{ e.actor }}</span><span class="src">src: {{ e.source }}</span>
+      <div class="detail">{{ e.detail }}</div>
+    </li>
+    {% endfor %}
+  </ol>
+
+  <!-- ===================== 7. ARTIFACT MANIFEST ===================== -->
+  <h2 class="section"><span class="num">07</span>Carved Artifact Manifest</h2>
+  <table>
+    <colgroup>
+      <col style="width:14%"><col style="width:18%"><col style="width:10%">
+      <col style="width:22%"><col style="width:22%"><col style="width:14%">
+    </colgroup>
+    <thead>
+      <tr><th>File Name</th><th>Original Path</th><th>Modified</th><th>MD5</th><th>SHA-256</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for a in artifacts %}
+      <tr>
+        <td>{{ a.file_name }}</td>
+        <td class="mono">{{ a.original_path }}</td>
+        <td class="mono">{{ a.modified }}</td>
+        <td class="mono">{{ a.md5 }}</td>
+        <td class="mono">{{ a.sha256 }}</td>
+        <td><span class="status {{ a.status|lower }}">{{ a.status }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ===================== 8. ANALYSIS & ATTRIBUTION ===================== -->
+  <div class="page-break"></div>
+  <h2 class="section"><span class="num">08</span>Analysis & Attribution <span class="note" style="text-transform:none;letter-spacing:0;">(opinion — see basis below)</span></h2>
+  <h3 class="subsection">Method of Breach</h3>
+  <p>{{ attribution.method_of_breach }}</p>
+  <h3 class="subsection">Exfiltration Destination</h3>
+  <p>{{ attribution.exfiltration_destination }}</p>
+  <h3 class="subsection">Sessions Active During Incident Window</h3>
+  <table>
+    <colgroup><col style="width:30%"><col style="width:20%"><col style="width:25%"><col style="width:25%"></colgroup>
+    <thead><tr><th>User</th><th>Session Type</th><th>Logon Time</th><th>Flag</th></tr></thead>
+    <tbody>
+      {% for u in attribution.logged_in_users %}
+      <tr>
+        <td class="mono">{{ u.user }}</td>
+        <td>{{ u.session_type }}</td>
+        <td class="mono">{{ u.logon_time }}</td>
+        <td>{{ "Suspect" if u.flagged else "Baseline" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h3 class="subsection">Basis of Opinion</h3>
+  <p>{{ attribution.basis_of_opinion }}</p>
+
+  <!-- ===================== 9. CONCLUSIONS ===================== -->
+  <h2 class="section"><span class="num">09</span>Conclusions</h2>
+  <p>{{ conclusions }}</p>
+
+  <!-- ===================== 10. DISPOSITION ===================== -->
+  <h2 class="section"><span class="num">10</span>Disposition of Evidence</h2>
+  <p>{{ disposition }}</p>
+
+  <!-- ===================== 11. DECLARATION ===================== -->
+  <h2 class="section"><span class="num">11</span>Examiner's Declaration</h2>
+  <div class="declaration-box">{{ declaration.statement }}</div>
+  <div class="sig-grid">
+    <div>
+      <div class="sig-line"></div>
+      <div class="sig-caption"><b>{{ declaration.examiner_name }}</b>, {{ declaration.examiner_title }}<br/>{{ declaration.certifications }}</div>
+    </div>
+    <div>
+      <div class="sig-line"></div>
+      <div class="sig-caption">Date signed<br/>Certified true copy per chain-of-custody {{ case.case_number }}-COC</div>
+    </div>
+  </div>
+
+  <!-- ===================== APPENDIX A: GLOSSARY ===================== -->
+  <div class="page-break"></div>
+  <h2 class="section"><span class="num">A</span>Appendix A — Glossary of Terms</h2>
+  <dl class="glossary">
+    {% for g in glossary %}
+    <dt>{{ g.term }}</dt><dd>{{ g.definition }}</dd>
+    {% endfor %}
+  </dl>
+
+</body>
+</html>

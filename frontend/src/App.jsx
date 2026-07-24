@@ -9,6 +9,7 @@ import {
   runRamAnalysisByUpload,
   runRamSanityByPath,
   runRamSanityByUpload,
+  downloadReport,
 } from './services/pipelineApi'
 
 const initialForm = {
@@ -438,6 +439,116 @@ function RamAnalysisSection({ analysisReport }) {
   )
 }
 
+// ── Report Configuration Form Component ─────────────────────────────────
+
+const INITIAL_REPORT_FORM = {
+  case_number: 'SP-2026-XXXX',
+  investigator_name: 'Lead Examiner',
+  credentials: 'GCFA, SwiftProbe Certified Examiner',
+  organization: 'SwiftProbe Forensic Investigations Unit, Banepa, Nepal',
+  target_machine: 'DESKTOP-XXXXX (Windows 11)',
+  asset_id: 'AST-XXXXX',
+  requestor_name: 'Requesting Party',
+  requestor_org: 'Client Organization',
+  executive_summary: '',
+}
+
+function ReportForm({ form, onChange, onGenerate, generating, error, pipelineResult }) {
+  const updateField = (field) => (e) => {
+    onChange({ ...form, [field]: e.target.value })
+  }
+
+  return (
+    <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Report Generator</p>
+          <h2 className="mt-2 text-3xl font-semibold text-white">Court-Presentable Forensic Report</h2>
+          <p className="mt-2 text-sm text-slate-400">
+            Configure the case metadata below and generate a professionally formatted PDF report suitable for legal proceedings.
+          </p>
+        </div>
+        <div className="shrink-0">
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={generating}
+            className="rounded-full bg-cyan-400 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {generating ? 'Generating PDF…' : 'Generate & Download Report'}
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100">
+          {error}
+        </div>
+      ) : null}
+
+      {pipelineResult ? (
+        <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+          Pipeline data available: {pipelineResult.total_files_carved ?? 0} carved files,{' '}
+          {pipelineResult.total_matches_found ?? 0} matches. This data will be included in the report.
+        </div>
+      ) : (
+        <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+          No pipeline data yet. Run the pipeline in the File Carver tab first to include evidence data in the report.
+        </div>
+      )}
+
+      <div className="mt-6 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+          Case Number
+          <input value={form.case_number} onChange={updateField('case_number')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+          Lead Investigator
+          <input value={form.investigator_name} onChange={updateField('investigator_name')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+          Credentials
+          <input value={form.credentials} onChange={updateField('credentials')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300 lg:col-span-2">
+          Organization
+          <input value={form.organization} onChange={updateField('organization')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+          Asset ID
+          <input value={form.asset_id} onChange={updateField('asset_id')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300 lg:col-span-2">
+          Target Machine
+          <input value={form.target_machine} onChange={updateField('target_machine')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+          Requestor Name
+          <input value={form.requestor_name} onChange={updateField('requestor_name')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300 lg:col-span-2">
+          Requesting Organization
+          <input value={form.requestor_org} onChange={updateField('requestor_org')}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+        </label>
+        <label className="flex flex-col gap-1.5 text-sm text-slate-300 lg:col-span-3">
+          Executive Summary
+          <textarea value={form.executive_summary} onChange={updateField('executive_summary')} rows={3}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50 resize-none"
+            placeholder="Brief summary of findings for the report..." />
+        </label>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [form, setForm] = useState(initialForm)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -457,6 +568,9 @@ export default function App() {
   const [ramAnalysis, setRamAnalysis] = useState(null)
   const [ramRunning, setRamRunning] = useState(false)
   const ramBusyRef = useRef(false)
+  const [reportForm, setReportForm] = useState(INITIAL_REPORT_FORM)
+  const [reportGenerating, setReportGenerating] = useState(false)
+  const [reportError, setReportError] = useState(null)
 
   const tabClasses = (tabName) =>
     `rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === tabName ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`
@@ -529,7 +643,6 @@ export default function App() {
   }
 
   const runRamAction = async (runner, successMessage) => {
-    // Prevent duplicate submissions while a request is in-flight.
     if (ramBusyRef.current) return
     ramBusyRef.current = true
     setRamRunning(true)
@@ -538,8 +651,6 @@ export default function App() {
         ? await runner({ caseId: form.case_id, file: ramSelectedFile })
         : await runner({ caseId: form.case_id, imagePath: ramImagePath })
 
-      // If the API returned a stored_path (from an upload), update the
-      // RAM image path field so the text input reflects the actual file on disk.
       if (result?.stored_path) {
         setRamImagePath(result.stored_path)
       } else if (result?.image_path) {
@@ -584,6 +695,28 @@ export default function App() {
     )
   }
 
+  const generateAndDownloadReport = async () => {
+    setReportGenerating(true)
+    setReportError(null)
+    try {
+      const caseMeta = {
+        ...reportForm,
+        case_id: form.case_id,
+        date_of_analysis: new Date().toISOString().split('T')[0],
+        report_date: new Date().toISOString().split('T')[0],
+        doc_control_id: `${reportForm.case_number}-R1`,
+        pipeline_result: pipeline || undefined,
+      }
+      const result = await downloadReport(caseMeta)
+      logStage(`Report downloaded: ${result.filename}`)
+    } catch (error) {
+      setReportError(error.message)
+      logStage(`Report generation failed: ${error.message}`)
+    } finally {
+      setReportGenerating(false)
+    }
+  }
+
   const statusText = status?.backend_unreachable
     ? 'Backend unavailable'
     : status?.supabase_configured
@@ -602,8 +735,6 @@ export default function App() {
     setRamFileNote(file ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'No RAM file selected yet.')
     setRamSanity(null)
     setRamAnalysis(null)
-    // When a file is selected for upload, clear the stale path so it's
-    // obvious the upload widget is in control (not the text field).
     if (file) {
       setRamImagePath('')
     }
@@ -633,13 +764,16 @@ export default function App() {
 
         <section className="flex flex-wrap gap-3 rounded-3xl border border-white/10 bg-slate-950/70 p-3 shadow-2xl">
           <button type="button" onClick={() => setActiveTab('carver')} className={tabClasses('carver')}>
-            File Carver and Orchestration
+            File Carver
           </button>
           <button type="button" onClick={() => setActiveTab('ram')} className={tabClasses('ram')}>
             RAM Module
           </button>
           <button type="button" onClick={() => setActiveTab('log')} className={tabClasses('log')}>
             Log Module
+          </button>
+          <button type="button" onClick={() => setActiveTab('report')} className={tabClasses('report')}>
+            Generate Report
           </button>
         </section>
 
@@ -650,195 +784,112 @@ export default function App() {
                 <MetricCard key={metric.label} {...metric} />
               ))}
             </section>
-
             <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
               <form onSubmit={runPipeline} className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <h2 className="text-2xl font-semibold text-white">Run evidence pipeline</h2>
                     <p className="mt-2 text-sm text-slate-400">
-                      Upload a raw image or use a local path, then hash the file, carve recoverable content, compare against target hashes, and persist recovered rows.
+                      Upload a raw image or use a local path, then hash, carve, compare against targets, and persist recovered rows.
                     </p>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={running}
-                    className="shrink-0 rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
+                  <button type="submit" disabled={running}
+                    className="shrink-0 rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60">
                     {running ? 'Running…' : 'Run Pipeline'}
                   </button>
                 </div>
-
                 <div className="mt-6 grid gap-4 md:grid-cols-2">
                   <label className="flex flex-col gap-2 text-sm text-slate-300">
                     Image path
-                    <input
-                      value={form.image_path}
-                      onChange={(event) => setForm((current) => ({ ...current, image_path: event.target.value }))}
-                      className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
-                    />
+                    <input value={form.image_path} onChange={(e) => setForm((c) => ({ ...c, image_path: e.target.value }))}
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
                   </label>
                   <label className="flex flex-col gap-2 text-sm text-slate-300">
                     Case ID
-                    <input
-                      value={form.case_id}
-                      onChange={(event) => setForm((current) => ({ ...current, case_id: event.target.value }))}
-                      className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
-                    />
+                    <input value={form.case_id} onChange={(e) => setForm((c) => ({ ...c, case_id: e.target.value }))}
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
                   </label>
                 </div>
-
                 <label className="mt-4 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 transition hover:border-cyan-300/60 hover:bg-cyan-300/10">
                   <span className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">Evidence file upload</span>
                   <span className="text-base text-white">Choose a raw image from your device</span>
                   <span className="break-words text-slate-400">{fileNote}</span>
                   <input type="file" className="hidden" onChange={handleFileChange} accept=".dd,.raw,.img,.bin,.e01,.evtx" />
                 </label>
-
-                <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-                  <p className="font-medium text-white">Execution mode</p>
-                  <p className="mt-2">
-                    {selectedFile
-                      ? 'The selected file will be uploaded to Flask and processed visually in the dashboard.'
-                      : 'No upload selected, so the pipeline will use the image path field.'}
-                  </p>
-                </div>
-
                 {pipeline ? (
                   <div className={`mt-6 rounded-2xl border p-4 ${pipeline.ok ? 'border-emerald-400/20 bg-emerald-500/10' : 'border-rose-400/20 bg-rose-500/10'}`}>
                     <p className="text-sm uppercase tracking-[0.35em] text-slate-300">Latest pipeline result</p>
                     <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                      <div className="min-w-0">
-                        <p className="text-xs text-slate-400">Total carved</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.total_files_carved ?? 0}</p>
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs text-slate-400">Matches found</p>
-                        <p className="text-2xl font-semibold text-white">{pipeline.total_matches_found ?? 0}</p>
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs text-slate-400">Sync status</p>
-                        <p className="break-words text-2xl font-semibold text-white">{pipeline.database_sync_status ?? 'unknown'}</p>
-                      </div>
+                      <div><p className="text-xs text-slate-400">Total carved</p><p className="text-2xl font-semibold text-white">{pipeline.total_files_carved ?? 0}</p></div>
+                      <div><p className="text-xs text-slate-400">Matches found</p><p className="text-2xl font-semibold text-white">{pipeline.total_matches_found ?? 0}</p></div>
+                      <div><p className="text-xs text-slate-400">Sync status</p><p className="break-words text-2xl font-semibold text-white">{pipeline.database_sync_status ?? 'unknown'}</p></div>
                     </div>
                     {pipeline.source_image_hash ? (
-                      <div className="mt-4 grid gap-2 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
+                      <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4 text-sm text-slate-200">
                         <p className="break-all"><span className="text-slate-400">Source hash:</span> {pipeline.source_image_hash}</p>
-                        <p><span className="text-slate-400">Source size:</span> {Number(pipeline.source_image_size ?? 0).toLocaleString()} bytes</p>
-                        {pipeline.stored_path ? <p className="break-all"><span className="text-slate-400">Saved upload:</span> {pipeline.stored_path}</p> : null}
-                        {pipeline.log_analysis_ok === false ? <p className="break-words text-rose-100">Log analysis failed: {pipeline.log_analysis_error ?? 'Unknown error'}</p> : null}
                       </div>
                     ) : null}
                     {pipeline.error ? <p className="mt-4 break-words text-sm text-rose-100">{pipeline.error}</p> : null}
                   </div>
                 ) : null}
               </form>
-
               <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/70 p-6 shadow-2xl">
                 <h2 className="text-2xl font-semibold text-white">Operational guidance</h2>
                 <div className="mt-4 space-y-4 text-sm leading-7 text-slate-300">
-                  <p>1. Load target hashes into Supabase using the schema from <span className="text-cyan-200">sql.md</span>.</p>
-                  <p>2. Keep raw evidence in the ignored evidence folders and run the pipeline against a local image copy.</p>
-                  <p>3. Use this dashboard to confirm the source hash, inspect matches, and review recovered file rows by case ID.</p>
-                  <p>4. When the Flask app is running on port 5000, this frontend uses the Vite proxy to read the API.</p>
-                </div>
-                <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-                  <p className="font-medium text-white">Current status</p>
-                  <p className="mt-2 break-words">
-                    {status?.backend_unreachable
-                      ? `Backend unavailable: ${status.error}`
-                      : status?.status
-                        ? `Backend status: ${status.status}`
-                        : 'Waiting for backend status'}
-                  </p>
-                  <p className="mt-1">{status?.target_artifacts_count ?? 0} target hashes available</p>
-                  <p className="mt-1">{status?.files_recovered_count ?? 0} recovered rows available</p>
+                  <p>1. Load target hashes into Supabase using the schema from sql.md.</p>
+                  <p>2. Keep raw evidence in ignored folders and run the pipeline against a local image copy.</p>
+                  <p>3. Use this dashboard to confirm source hash, inspect matches, and review recovered rows.</p>
+                  <p>4. After the pipeline completes, switch to the Generate Report tab to produce a court-ready PDF.</p>
                 </div>
               </section>
             </section>
-
             <section className="grid gap-6 xl:grid-cols-2">
-              <DataTable
-                title="Target Artifacts"
-                rows={targets}
-                emptyText="No target hashes returned. Check Supabase configuration and ensure target_artifacts contains data."
-              />
-              <DataTable
-                title={`Recovered Files${form.case_id ? ` — ${form.case_id}` : ''}`}
-                rows={recovered}
-                emptyText="No recovered files have been loaded for this case yet."
-              />
+              <DataTable title="Target Artifacts" rows={targets} emptyText="No target hashes returned." />
+              <DataTable title={`Recovered Files${form.case_id ? ` — ${form.case_id}` : ''}`} rows={recovered} emptyText="No recovered files loaded yet." />
             </section>
           </>
         ) : activeTab === 'ram' ? (
           <section className="flex flex-col gap-8">
-            {/* ── Setup card ── */}
             <div className="rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
               <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">RAM module</p>
               <h2 className="mt-3 text-3xl font-semibold text-white">Volatile memory analysis</h2>
               <p className="mt-4 text-sm leading-7 text-slate-400">
                 Run a sanity check first, then analyze a RAM capture for processes, process trees, and network artifacts.
-                The module accepts local paths or uploads.
               </p>
-
               <div className="mt-6 grid gap-4 sm:grid-cols-3">
                 <label className="flex flex-col gap-2 text-sm text-slate-300 sm:col-span-2">
                   Case ID
-                  <input
-                    value={form.case_id}
-                    onChange={(event) => setForm((current) => ({ ...current, case_id: event.target.value }))}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
-                  />
+                  <input value={form.case_id} onChange={(e) => setForm((c) => ({ ...c, case_id: e.target.value }))}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
                 </label>
                 <div className="flex items-end justify-end gap-3 sm:col-span-1">
-                  <button
-                    type="button"
-                    onClick={runRamSanityCheck}
-                    disabled={ramRunning}
-                    className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
+                  <button type="button" onClick={runRamSanityCheck} disabled={ramRunning}
+                    className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:opacity-60">
                     {ramRunning ? 'Running…' : 'Sanity Check'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={runRamAnalysis}
-                    disabled={ramRunning}
-                    className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
+                  <button type="button" onClick={runRamAnalysis} disabled={ramRunning}
+                    className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60">
                     {ramRunning ? 'Running…' : 'Analyze'}
                   </button>
                 </div>
               </div>
               <label className="mt-4 flex flex-col gap-2 text-sm text-slate-300">
                 RAM image path
-                <input
-                  value={ramImagePath}
-                  onChange={(event) => setRamImagePath(event.target.value)}
+                <input value={ramImagePath} onChange={(e) => setRamImagePath(e.target.value)}
                   placeholder="Enter a file path or upload a file below"
-                  className="w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/50"
-                />
+                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
               </label>
-
-              <label className="mt-6 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 transition hover:border-cyan-300/60 hover:bg-cyan-300/10">
+              <label className="mt-6 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 hover:border-cyan-300/60 hover:bg-cyan-300/10">
                 <span className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">RAM capture upload</span>
-                <span className="text-base text-white">Choose a memory image from your device</span>
+                <span className="text-base text-white">Choose a memory image</span>
                 <span className="text-slate-400">{ramFileNote}</span>
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={handleRamFileChange}
-                  accept=".raw,.mem,.dmp,.vmem,.lime,.aff4,.mddramimage"
-                />
+                <input type="file" className="hidden" onChange={handleRamFileChange} accept=".raw,.mem,.dmp,.vmem,.lime,.aff4,.mddramimage" />
               </label>
             </div>
-
-            {/* ── Sanity results ── */}
             <RamSanitySection sanityReport={ramSanity?.report ?? ramSanity} />
-
-            {/* ── Analysis results ── */}
             <RamAnalysisSection analysisReport={ramAnalysis} />
           </section>
-        ) : (
+        ) : activeTab === 'log' ? (
           <section className="grid gap-6 xl:grid-cols-2">
             <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -846,63 +897,52 @@ export default function App() {
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log module</p>
                   <h2 className="mt-2 text-3xl font-semibold text-white">File metadata and device activity</h2>
                   <p className="mt-2 text-sm text-slate-400">
-                    This tab reflects the current upload analysis: file metadata, EVTX parsing, USB connection detection, and file-transfer hints.
+                    Log analysis from the latest pipeline run: EVTX parsing, USB detection, file-transfer hints, and session traces.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('carver')}
-                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
-                >
+                <button type="button" onClick={() => setActiveTab('carver')}
+                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 hover:bg-white/10">
                   Open File Carver
                 </button>
               </div>
-
-              <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Metadata</p>
-                  <p className="mt-2 text-sm text-slate-200">File hash, timestamps, MIME, and upload details.</p>
-                </div>
-                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">USB trace</p>
-                  <p className="mt-2 text-sm text-slate-200">Event-log search for removable-device connection activity.</p>
-                </div>
-                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Transfer trace</p>
-                  <p className="mt-2 text-sm text-slate-200">Event-log search for file transfer or copy initialization.</p>
-                </div>
-                <div className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Session trace</p>
-                  <p className="mt-2 text-sm text-slate-200">Logon/logoff correlation to attribute USB activity to a user account.</p>
-                </div>
-              </div>
-
-              <div className="mt-6 space-y-3 text-sm text-slate-300">
-                <p>Use the file-carver tab to upload a sample and refresh this analysis payload.</p>
-                <p>The backend log module is already connected to the pipeline response, so this view updates from the latest run.</p>
-              </div>
             </div>
-
-            <div className="xl:col-span-2">
-              <LogIntelligencePanel logAnalysis={logAnalysis} />
-            </div>
-
-            <div className="xl:col-span-2">
-              <SessionTracePanel logAnalysis={logAnalysis} />
-            </div>
-
+            <div className="xl:col-span-2"><LogIntelligencePanel logAnalysis={logAnalysis} /></div>
+            <div className="xl:col-span-2"><SessionTracePanel logAnalysis={logAnalysis} /></div>
             <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
               <h3 className="text-lg font-semibold text-white">Run log</h3>
               <div className="mt-4 space-y-3">
-                {runLog.length ? (
-                  runLog.map((entry, index) => (
-                    <div key={`${entry.time}-${index}`} className="min-w-0 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
-                      <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
-                      <p className="mt-1 break-words">{entry.message}</p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-slate-400">No run events yet. Use the File Carver tab to run the pipeline and populate the log module.</p>
+                {runLog.length ? runLog.map((entry, i) => (
+                  <div key={`${entry.time}-${i}`} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                    <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
+                    <p className="mt-1 break-words">{entry.message}</p>
+                  </div>
+                )) : (
+                  <p className="text-sm text-slate-400">No run events yet. Use the File Carver tab to run the pipeline.</p>
+                )}
+              </div>
+            </section>
+          </section>
+        ) : (
+          // ── Report Generator Tab ──
+          <section className="flex flex-col gap-6">
+            <ReportForm
+              form={reportForm}
+              onChange={setReportForm}
+              onGenerate={generateAndDownloadReport}
+              generating={reportGenerating}
+              error={reportError}
+              pipelineResult={pipeline}
+            />
+            <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
+              <h3 className="text-lg font-semibold text-white">Run log</h3>
+              <div className="mt-4 space-y-3">
+                {runLog.length ? runLog.map((entry, i) => (
+                  <div key={`${entry.time}-${i}`} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                    <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{entry.time}</p>
+                    <p className="mt-1 break-words">{entry.message}</p>
+                  </div>
+                )) : (
+                  <p className="text-sm text-slate-400">No run events yet.</p>
                 )}
               </div>
             </section>
