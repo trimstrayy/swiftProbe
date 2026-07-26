@@ -616,11 +616,8 @@ def generate_pdf(
         html_path = pdf_path.with_suffix(".html")
         html_path.write_text(html, encoding="utf-8")
         logger.info("HTML fallback written: %s", html_path)
-        raise RuntimeError(
-            f"PDF generation failed: {last_error}. "
-            f"HTML preview saved to {html_path}. "
-            "Install wkhtmltopdf (https://wkhtmltopdf.org) or GTK3 for WeasyPrint."
-        ) from last_error
+        # Return HTML path as fallback - caller should check file extension
+        return str(html_path.resolve())
 
     return str(pdf_path.resolve())
 

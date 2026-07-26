@@ -296,11 +296,20 @@ def run_pipeline():
     log_paths = payload.get("log_paths")
 
     if not image_path or not case_id:
-        return _json_error("Both image_path and case_id are required.", 400)
+        return jsonify({
+            "ok": False,
+            "error": "Both image_path and case_id are required.",
+            "message": "Please specify a valid evidence file path and case ID in the form.",
+        }), 400
 
     image_file = Path(str(image_path))
     if not image_file.exists():
-        return _json_error(f"Evidence image not found: {image_file}", 404)
+        return jsonify({
+            "ok": False,
+            "error": f"Evidence image not found: {image_file}",
+            "message": f"The file '{image_file}' does not exist. Upload an evidence file or update the image_path to point to a valid forensic image (.raw, .dd, .E01, .img, .bin).",
+            "hint": "Place a test image at evidence/L0_Graphic.dd or use the file upload option.",
+        }), 200  # Return 200 to avoid browser console 404 errors
 
     try:
         return jsonify(_run_pipeline_for_image(image_file, str(case_id), log_paths=log_paths))
@@ -356,6 +365,17 @@ def run_pipeline_upload():
 @app.post("/api/ram/sanity")
 def ram_sanity_check():
     payload = request.get_json(silent=True) or {}
+    image_path = payload.get("image_path") or request.form.get("image_path")
+    uploaded_file = request.files.get("ram_file") or request.files.get("file") or request.files.get("image_file")
+
+    # Validate that either an image_path was provided or a file was uploaded
+    if not image_path and (not uploaded_file or not uploaded_file.filename):
+        return jsonify({
+            "ok": False,
+            "status": "error",
+            "message": "RAM image path or file is required for sanity check.",
+            "hint": "Provide an image_path in the JSON body, or upload a ram_file via multipart/form-data."
+        }), 400
 
     try:
         case_id, ram_path, stored_path = _resolve_ram_source(payload)
@@ -370,18 +390,44 @@ def ram_sanity_check():
                 **report,
             }
         )
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": "RAM sanity check requires a valid RAM dump file path or upload.",
+        }), 400
+    except FileNotFoundError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": f"RAM file not found at the specified path: {exc}",
+        }), 404
     except Exception as exc:
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(exc),
-            }
-        ), 500
+        logger.exception("RAM sanity check failed")
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": f"RAM sanity check encountered an unexpected error: {exc}",
+        }), 500
 
 
 @app.post("/api/ram/analyze")
 def ram_analyze():
     payload = request.get_json(silent=True) or {}
+    image_path = payload.get("image_path") or request.form.get("image_path")
+    uploaded_file = request.files.get("ram_file") or request.files.get("file") or request.files.get("image_file")
+
+    # Validate that either an image_path was provided or a file was uploaded
+    if not image_path and (not uploaded_file or not uploaded_file.filename):
+        return jsonify({
+            "ok": False,
+            "status": "error",
+            "message": "RAM image path or file is required for analysis.",
+            "hint": "Provide an image_path in the JSON body, or upload a ram_file via multipart/form-data."
+        }), 400
 
     try:
         case_id, ram_path, stored_path = _resolve_ram_source(payload)
@@ -395,13 +441,28 @@ def ram_analyze():
                 **analysis,
             }
         )
+    except ValueError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": "RAM analysis requires a valid RAM dump file path or upload.",
+        }), 400
+    except FileNotFoundError as exc:
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": f"RAM file not found at the specified path: {exc}",
+        }), 404
     except Exception as exc:
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(exc),
-            }
-        ), 500
+        logger.exception("RAM analysis failed")
+        return jsonify({
+            "ok": False,
+            "error": str(exc),
+            "status": "error",
+            "message": f"RAM analysis encountered an unexpected error: {exc}",
+        }), 500
 
 
 # ── Log Module endpoint ────────────────────────────────────────────────────
@@ -470,18 +531,26 @@ def generate_forensic_report():
     carved_files = payload.get("carved_files")
 
     try:
-        pdf_path = generate_pdf(
+        report_path = generate_pdf(
             case_meta=case_meta,
             pipeline_result=pipeline_result,
             log_analysis=log_analysis,
             ram_analysis=ram_analysis,
             carved_files=carved_files,
         )
+        # Check if we got an HTML fallback instead of PDF
+        if report_path.endswith('.html'):
+            return send_file(
+                report_path,
+                mimetype="text/html",
+                as_attachment=True,
+                download_name=Path(report_path).name,
+            )
         return send_file(
-            pdf_path,
+            report_path,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=Path(pdf_path).name,
+            download_name=Path(report_path).name,
         )
     except Exception as exc:
         logger.exception("Report generation failed")
@@ -502,38 +571,112 @@ def generate_report_download():
     This endpoint is simpler than the full ``/api/report/generate``
     because it does not require pre-submitted analysis payloads.
     """
-    payload = request.get_json(silent=True) or {}
-    case_meta = payload.get("case_meta", payload)
-
-    # Attempt to pull current data from Supabase for auto-population
-    client = get_supabase_client()
-    recovered_files = []
-    if client is not None:
-        try:
-            resp = client.table("files_recovered").select("*").limit(500).execute()
-            recovered_files = (getattr(resp, "data", []) or [])
-        except Exception:
-            pass
-
     try:
-        pdf_path = generate_pdf(
+        # Log incoming request
+        logger.info("=" * 80)
+        logger.info("REPORT GENERATION REQUEST STARTED")
+        logger.info("=" * 80)
+        
+        payload = request.get_json(silent=True) or {}
+        logger.info(f"Request payload: {payload}")
+        
+        case_meta = payload.get("case_meta", payload)
+        logger.info(f"Case metadata: {case_meta}")
+        
+        # Validate required fields
+        if not case_meta.get("case_number"):
+            logger.warning("Missing case_number in request")
+            return jsonify({
+                "ok": False,
+                "error": "case_number is required in case_meta",
+                "details": "Please provide a case number in the report configuration"
+            }), 400
+        
+        if not case_meta.get("investigator_name"):
+            logger.warning("Missing investigator_name in request")
+            return jsonify({
+                "ok": False,
+                "error": "investigator_name is required in case_meta",
+                "details": "Please provide the lead investigator name"
+            }), 400
+
+        # Check Supabase configuration
+        logger.info("Checking Supabase configuration...")
+        client = get_supabase_client()
+        if client is None:
+            logger.warning("Supabase client is None - environment variables may be missing")
+        
+        # Attempt to pull current data from Supabase for auto-population
+        recovered_files = []
+        supabase_error = None
+        if client is not None:
+            try:
+                logger.info("Fetching recovered files from Supabase...")
+                resp = client.table("files_recovered").select("*").limit(500).execute()
+                recovered_files = (getattr(resp, "data", []) or [])
+                logger.info(f"Fetched {len(recovered_files)} recovered files from Supabase")
+            except Exception as supabase_exc:
+                supabase_error = str(supabase_exc)
+                logger.warning(f"Failed to fetch recovered files from Supabase: {supabase_exc}")
+                logger.warning(f"Supabase error details: {supabase_error}")
+        
+        if not recovered_files:
+            logger.info("No recovered files found, proceeding with empty dataset")
+
+        # Generate the report
+        logger.info("Starting PDF generation...")
+        logger.info(f"Case meta keys: {list(case_meta.keys())}")
+        logger.info(f"Recovered files count: {len(recovered_files)}")
+        
+        report_path = generate_pdf(
             case_meta=case_meta,
             carved_files=recovered_files if recovered_files else None,
         )
+        
+        logger.info(f"Report generated successfully at: {report_path}")
+        logger.info(f"File extension: {Path(report_path).suffix}")
+        
+        # Check if we got an HTML fallback instead of PDF
+        if report_path.endswith('.html'):
+            logger.info("Returning HTML fallback (PDF generation unavailable)")
+            return send_file(
+                report_path,
+                mimetype="text/html",
+                as_attachment=True,
+                download_name=Path(report_path).name,
+            )
+        
+        logger.info("Returning PDF file")
         return send_file(
-            pdf_path,
+            report_path,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=Path(pdf_path).name,
+            download_name=Path(report_path).name,
         )
+        
     except Exception as exc:
-        logger.exception("Report download generation failed")
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(exc),
-            }
-        ), 500
+        logger.exception("Report download generation failed with unhandled exception")
+        import traceback
+        error_details = {
+            "ok": False,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
+        
+        # Add helpful context based on error type
+        error_message = str(exc).lower()
+        if "weasyprint" in error_message or "wkhtmltopdf" in error_message:
+            error_details["suggestion"] = "PDF generation library not installed. Install weasyprint or wkhtmltopdf."
+        elif "jinja2" in error_message or "template" in error_message:
+            error_details["suggestion"] = "Report template error. Check backend/reports/report_template.html"
+        elif "supabase" in error_message or "database" in error_message:
+            error_details["suggestion"] = "Database connection issue. Check Supabase credentials in .env file"
+        elif "no such file" in error_message or "not found" in error_message:
+            error_details["suggestion"] = "File not found. Check that evidence directories exist"
+        
+        logger.error(f"Returning error response: {error_details}")
+        return jsonify(error_details), 500
 
 
 # ── Legacy / Admin endpoints ───────────────────────────────────────────────

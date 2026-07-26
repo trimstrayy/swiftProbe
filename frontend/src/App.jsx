@@ -682,6 +682,15 @@ export default function App() {
   }
 
   const runRamSanityCheck = () => {
+    if (!ramSelectedFile && !ramImagePath.trim()) {
+      logStage('RAM sanity check skipped: Please select or provide a path to a valid RAM dump first.')
+      setRamSanity({
+        ok: false,
+        status: 'skipped',
+        message: 'Please select or provide a path to a valid RAM dump first.',
+      })
+      return
+    }
     return runRamAction(
       ramSelectedFile ? runRamSanityByUpload : runRamSanityByPath,
       'RAM sanity check completed.'
@@ -689,6 +698,15 @@ export default function App() {
   }
 
   const runRamAnalysis = () => {
+    if (!ramSelectedFile && !ramImagePath.trim()) {
+      logStage('RAM analysis skipped: Please select or provide a path to a valid RAM dump first.')
+      setRamAnalysis({
+        ok: false,
+        status: 'skipped',
+        message: 'Please select or provide a path to a valid RAM dump first.',
+      })
+      return
+    }
     return runRamAction(
       ramSelectedFile ? runRamAnalysisByUpload : runRamAnalysisByPath,
       'RAM analysis completed.'

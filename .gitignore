@@ -8,3 +8,10 @@ venv/
 venv*/
 **/__pycache__/
 evidence/
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+*.log
+outputs/

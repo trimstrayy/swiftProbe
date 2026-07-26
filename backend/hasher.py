@@ -40,8 +40,10 @@ def hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def normalize_sha256(value: str) -> str:
+def normalize_sha256(value: str | None) -> str:
     """Normalize a SHA-256 string for consistent comparisons."""
+    if not value:
+        return ""
     return value.strip().lower()
 
 
