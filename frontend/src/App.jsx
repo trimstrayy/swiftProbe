@@ -173,7 +173,7 @@ function LogIntelligencePanel({ logAnalysis }) {
         </div>
       </div>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
         <MetricCard
           label="File hash"
           value={(fileMetadata.hash ?? logAnalysis.summary?.source_hash ?? '').slice(0, 16) || 'n/a'}
@@ -183,16 +183,6 @@ function LogIntelligencePanel({ logAnalysis }) {
           label="File size"
           value={Number(fileMetadata.size ?? logAnalysis.summary?.source_size_bytes ?? 0).toLocaleString()}
           hint={`${fileMetadata.extension ?? 'unknown'} ${fileMetadata.mime_type ? `· ${fileMetadata.mime_type}` : ''}`.trim()}
-        />
-        <MetricCard
-          label="USB events"
-          value={eventScan.usb_connection_count ?? 0}
-          hint="Potential removable-device connections from the current device logs."
-        />
-        <MetricCard
-          label="Transfer events"
-          value={eventScan.file_transfer_count ?? 0}
-          hint="Potential file-copy or transfer initialization activity."
         />
       </div>
 
