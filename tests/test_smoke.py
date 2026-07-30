@@ -238,10 +238,13 @@ class TestFlaskAPI:
             assert data["status"] == "ok"
             assert data["service"] == "swiftprobe-backend"
 
+    def _auth_headers(self):
+        return {"Authorization": "Bearer test-token"}
+
     def test_targets_endpoint(self):
         from backend.app import app
         with app.test_client() as client:
-            resp = client.get("/api/targets")
+            resp = client.get("/api/targets", headers=self._auth_headers())
             assert resp.status_code == 200
             data = resp.get_json()
             assert "ok" in data
@@ -250,7 +253,7 @@ class TestFlaskAPI:
     def test_recovered_files_endpoint(self):
         from backend.app import app
         with app.test_client() as client:
-            resp = client.get("/api/recovered-files")
+            resp = client.get("/api/recovered-files", headers=self._auth_headers())
             assert resp.status_code == 200
             data = resp.get_json()
             assert "ok" in data
@@ -260,6 +263,7 @@ class TestFlaskAPI:
         with app.test_client() as client:
             resp = client.post(
                 "/api/report/generate-download",
+                headers=self._auth_headers(),
                 json={
                     "case_meta": {
                         "case_number": "TEST-001",
@@ -278,7 +282,34 @@ class TestFlaskAPI:
     def test_pipeline_run_missing_params(self):
         from backend.app import app
         with app.test_client() as client:
-            resp = client.post("/api/pipeline/run", json={})
+            resp = client.post("/api/pipeline/run", headers=self._auth_headers(), json={})
             assert resp.status_code == 400
             data = resp.get_json()
             assert "error" in data
+
+    def test_auth_required_on_protected_routes(self):
+        """Verify that protected routes return 401 without a token."""
+        from backend.app import app
+        with app.test_client() as client:
+            resp = client.get("/api/targets")
+            assert resp.status_code == 401
+            data = resp.get_json()
+            assert data.get("error") == "unauthorized"
+
+            resp = client.post("/api/pipeline/run", json={})
+            assert resp.status_code == 401
+
+            resp = client.post("/api/ram/analyze", json={})
+            assert resp.status_code == 401
+
+            resp = client.post("/api/log/analyze", json={"artifact_path": "/nonexistent"})
+            assert resp.status_code == 401
+
+    def test_health_endpoint_no_auth_required(self):
+        """Verify health check works without authentication."""
+        from backend.app import app
+        with app.test_client() as client:
+            resp = client.get("/api/status")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["ok"] is True

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from './services/supabaseClient'
 import {
   fetchStatus,
   fetchTargets,
@@ -10,6 +11,9 @@ import {
   runRamSanityByPath,
   runRamSanityByUpload,
   downloadReport,
+  signInWithPassword,
+  signUpWithEmail,
+  signOut,
 } from './services/pipelineApi'
 
 const initialForm = {
@@ -549,7 +553,145 @@ function ReportForm({ form, onChange, onGenerate, generating, error, pipelineRes
   )
 }
 
+// ── Auth Page Component (Sign In / Sign Up) ────────────────────────────
+
+function LoginPage({ onLogin }) {
+  const [isSignUp, setIsSignUp] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      if (isSignUp) {
+        // ── Sign Up flow ────────────────────────────────────────────────
+        const data = await signUpWithEmail(email, password)
+
+        // Supabase may return a session immediately (if email confirmation
+        // is disabled) or return null (if confirmation is required).
+        if (data?.session) {
+          // Auto-login: session is active, no email confirmation needed
+          setSuccess('Account created! Logging you in…')
+          onLogin()
+        } else if (data?.user) {
+          // Email confirmation required
+          setSuccess('Account created! Check your email for a confirmation link to activate your account.')
+          setIsSignUp(false) // Switch back to sign-in mode so they can log in after confirming
+          setEmail('')
+          setPassword('')
+        } else {
+          setSuccess('Account creation request received. Check your email for further instructions.')
+          setIsSignUp(false)
+        }
+      } else {
+        // ── Sign In flow ───────────────────────────────────────────────
+        await signInWithPassword(email, password)
+        onLogin()
+      }
+    } catch (err) {
+      setError(err.message || 'An unexpected error occurred. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggleMode = () => {
+    setIsSignUp((prev) => !prev)
+    setError(null)
+    setSuccess(null)
+  }
+
+  return (
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_42%),linear-gradient(180deg,#020617_0%,#07111f_48%,#020617_100%)] flex items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white/5 p-8 shadow-[0_30px_100px_rgba(0,0,0,0.35)] backdrop-blur">
+        <p className="text-xs uppercase tracking-[0.45em] text-cyan-200/80 text-center">SwiftProbe</p>
+        <h1 className="mt-4 text-3xl font-semibold text-white text-center">
+          {isSignUp ? 'Create account' : 'Sign in'}
+        </h1>
+        <p className="mt-2 text-sm text-slate-400 text-center">
+          {isSignUp
+            ? 'Register with your email to access the forensic dashboard.'
+            : 'Authenticate with your Supabase credentials to access the forensic dashboard.'}
+        </p>
+
+        {/* ── Success banner ─────────────────────────────────────────── */}
+        {success ? (
+          <div className="mt-6 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+            {success}
+          </div>
+        ) : null}
+
+        {/* ── Error banner ───────────────────────────────────────────── */}
+        {error ? (
+          <div className="mt-4 rounded-2xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-100">
+            {error}
+          </div>
+        ) : null}
+
+        <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+          <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+            Email
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+              autoComplete="email"
+              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm text-slate-300">
+            Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+              autoComplete={isSignUp ? 'new-password' : 'current-password'}
+              minLength={isSignUp ? 6 : undefined}
+              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-cyan-300/50" />
+          </label>
+
+          {isSignUp ? (
+            <p className="text-xs text-slate-500">
+              Password must be at least 6 characters long.
+            </p>
+          ) : null}
+
+          <button type="submit" disabled={loading}
+            className="w-full rounded-full bg-cyan-400 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60">
+            {loading
+              ? (isSignUp ? 'Creating account…' : 'Signing in…')
+              : (isSignUp ? 'Sign up' : 'Sign in')}
+          </button>
+        </form>
+
+        {/* ── Mode toggle ────────────────────────────────────────────── */}
+        <p className="mt-6 text-center text-sm text-slate-400">
+          {isSignUp ? (
+            <>
+              Already have an account?{' '}
+              <button type="button" onClick={toggleMode}
+                className="font-semibold text-cyan-300 hover:text-cyan-200 transition">
+                Sign in
+              </button>
+            </>
+          ) : (
+            <>
+              Don't have an account?{' '}
+              <button type="button" onClick={toggleMode}
+                className="font-semibold text-cyan-300 hover:text-cyan-200 transition">
+                Sign up
+              </button>
+            </>
+          )}
+        </p>
+      </div>
+    </main>
+  )
+}
+
 export default function App() {
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [form, setForm] = useState(initialForm)
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileNote, setFileNote] = useState('No file selected yet.')
@@ -598,11 +740,31 @@ export default function App() {
     }
   }
 
+  // ── Auth session management ──────────────────────────────────────────
   useEffect(() => {
-    loadDashboard()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setAuthLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
+    return () => subscription?.unsubscribe()
   }, [])
 
+  useEffect(() => {
+    if (session) {
+      loadDashboard()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
+
+  const handleSignOut = async () => {
+    await signOut()
+    setSession(null)
+  }
+
+  // ── All hooks MUST be called before any early returns ──────────────
   const metrics = useMemo(() => {
     const matches = recovered.filter((item) => item.match_found).length
     return [
@@ -614,6 +776,19 @@ export default function App() {
   }, [targets.length, recovered, pipeline, status])
 
   const logAnalysis = pipeline?.log_analysis ?? null
+
+  // ── Early returns happen AFTER all hooks ───────────────────────────
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_42%),linear-gradient(180deg,#020617_0%,#07111f_48%,#020617_100%)] flex items-center justify-center">
+        <p className="text-slate-400 text-lg">Loading…</p>
+      </main>
+    )
+  }
+
+  if (!session) {
+    return <LoginPage onLogin={() => supabase.auth.getSession().then(({ data: { session } }) => setSession(session))} />
+  }
 
   const runPipeline = async (event) => {
     event.preventDefault()
@@ -770,12 +945,21 @@ export default function App() {
                 Trigger the forensic pipeline, review target hashes, and inspect recovered files from a single app surface.
               </p>
             </div>
-            <div className="shrink-0 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
-              {loading
-                ? 'Refreshing dashboard…'
-                : status?.backend_unreachable
-                  ? 'Backend unavailable'
-                  : statusText}
+            <div className="flex items-center gap-4">
+              {session?.user?.email ? (
+                <span className="hidden text-sm text-slate-400 sm:inline">{session.user.email}</span>
+              ) : null}
+              <button type="button" onClick={handleSignOut}
+                className="shrink-0 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-100 hover:bg-rose-500/20">
+                Sign out
+              </button>
+              <div className="shrink-0 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+                {loading
+                  ? 'Refreshing dashboard…'
+                  : status?.backend_unreachable
+                    ? 'Backend unavailable'
+                    : statusText}
+              </div>
             </div>
           </div>
         </header>

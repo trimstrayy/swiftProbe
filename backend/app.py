@@ -6,13 +6,23 @@ from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, g, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 try:
     from backend.core.supabase_db import get_supabase_client
 except ImportError:  # pragma: no cover - supports running from the backend folder
     from core.supabase_db import get_supabase_client
+
+try:
+    from backend.core.auth import require_auth
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from core.auth import require_auth
+
+try:
+    from backend.core.cases import get_case_or_404, create_case, list_cases_for_user
+except ImportError:  # pragma: no cover - supports running from the backend folder
+    from core.cases import get_case_or_404, create_case, list_cases_for_user
 
 try:
     from backend.orchestrator import process_evidence_pipeline
@@ -255,6 +265,7 @@ def api_status():
 
 
 @app.get("/api/targets")
+@require_auth
 def list_targets():
     client = get_supabase_client()
     targets, connected, error = _get_targets(client)
@@ -271,6 +282,7 @@ def list_targets():
 
 
 @app.get("/api/recovered-files")
+@require_auth
 def list_recovered_files():
     client = get_supabase_client()
     case_id = request.args.get("case_id")
@@ -289,6 +301,7 @@ def list_recovered_files():
 
 
 @app.post("/api/pipeline/run")
+@require_auth
 def run_pipeline():
     payload = request.get_json(silent=True) or {}
     image_path = payload.get("image_path")
@@ -326,6 +339,7 @@ def run_pipeline():
 
 
 @app.post("/api/pipeline/upload")
+@require_auth
 def run_pipeline_upload():
     case_id = request.form.get("case_id")
     uploaded_file = request.files.get("image_file") or request.files.get("file") or request.files.get("image")
@@ -363,6 +377,7 @@ def run_pipeline_upload():
 
 
 @app.post("/api/ram/sanity")
+@require_auth
 def ram_sanity_check():
     payload = request.get_json(silent=True) or {}
     image_path = payload.get("image_path") or request.form.get("image_path")
@@ -415,6 +430,7 @@ def ram_sanity_check():
 
 
 @app.post("/api/ram/analyze")
+@require_auth
 def ram_analyze():
     payload = request.get_json(silent=True) or {}
     image_path = payload.get("image_path") or request.form.get("image_path")
@@ -469,6 +485,7 @@ def ram_analyze():
 
 
 @app.post("/api/log/analyze")
+@require_auth
 def analyze_log_artifacts():
     payload = request.get_json(silent=True) or {}
     artifact_path = payload.get("artifact_path")
@@ -516,6 +533,7 @@ def analyze_log_artifacts():
 
 
 @app.post("/api/report/generate")
+@require_auth
 def generate_forensic_report():
     """Generate a court-presentable PDF report from the latest pipeline data.
 
@@ -563,6 +581,7 @@ def generate_forensic_report():
 
 
 @app.post("/api/report/generate-download")
+@require_auth
 def generate_report_download():
     """Generate a PDF report and return it as a direct download.
 
@@ -679,10 +698,56 @@ def generate_report_download():
         return jsonify(error_details), 500
 
 
+# ── Case Management endpoints ─────────────────────────────────────────────
+
+
+@app.get("/api/cases")
+@require_auth
+def list_cases():
+    """List all cases accessible to the authenticated user."""
+    user = getattr(g, "current_user", {})
+    user_id = user.get("id") if user else None
+    if not user_id:
+        return _json_error("User identification required", 401)
+
+    cases = list_cases_for_user(user_id)
+    return jsonify({"ok": True, "count": len(cases), "items": cases})
+
+
+@app.post("/api/cases")
+@require_auth
+def create_new_case():
+    """Create a new case with the authenticated user as owner."""
+    payload = request.get_json(silent=True) or {}
+    case_number = payload.get("case_number")
+    title = payload.get("title")
+    description = payload.get("description")
+
+    if not case_number:
+        return _json_error("case_number is required.", 400)
+
+    user = getattr(g, "current_user", {})
+    user_id = user.get("id") if user else None
+    if not user_id:
+        return _json_error("User identification required", 401)
+
+    case = create_case(
+        case_number=case_number,
+        owner_user_id=user_id,
+        title=title,
+        description=description,
+    )
+    if case is None:
+        return jsonify({"ok": False, "error": "Failed to create case. Check that the case_number is unique."}), 500
+
+    return jsonify({"ok": True, "case": case}), 201
+
+
 # ── Legacy / Admin endpoints ───────────────────────────────────────────────
 
 
 @app.get("/supabase")
+@require_auth
 def supabase_status():
     client = get_supabase_client()
     return jsonify({"ok": True, "supabase_configured": client is not None})
