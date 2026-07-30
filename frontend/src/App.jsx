@@ -10,6 +10,7 @@ import {
   runRamAnalysisByUpload,
   runRamSanityByPath,
   runRamSanityByUpload,
+  runLogAnalysisByUpload,
   downloadReport,
   signInWithPassword,
   signUpWithEmail,
@@ -713,6 +714,9 @@ export default function App() {
   const [reportForm, setReportForm] = useState(INITIAL_REPORT_FORM)
   const [reportGenerating, setReportGenerating] = useState(false)
   const [reportError, setReportError] = useState(null)
+  const [logSelectedFile, setLogSelectedFile] = useState(null)
+  const [logFileNote, setLogFileNote] = useState('No log file selected yet.')
+  const [logRunning, setLogRunning] = useState(false)
 
   const tabClasses = (tabName) =>
     `rounded-2xl px-5 py-3 text-sm font-semibold transition ${activeTab === tabName ? 'bg-cyan-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`
@@ -933,6 +937,40 @@ export default function App() {
     }
   }
 
+  const handleLogFileChange = (event) => {
+    const file = event.target.files?.[0] ?? null
+    setLogSelectedFile(file)
+    setLogFileNote(file ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'No log file selected yet.')
+  }
+
+  const runLogAnalysis = async () => {
+    if (!logSelectedFile) {
+      logStage('Log analysis skipped: Please select an XML/EVTX file first.')
+      return
+    }
+    setLogRunning(true)
+    try {
+      logStage(`Analyzing log file: ${logSelectedFile.name}`)
+      const result = await runLogAnalysisByUpload({
+        caseId: form.case_id,
+        file: logSelectedFile,
+      })
+      logStage('Log analysis completed.')
+      setPipeline((current) => ({
+        ...(current || {}),
+        log_analysis: result,
+      }))
+    } catch (error) {
+      logStage(`Log analysis failed: ${error.message}`)
+      setPipeline((current) => ({
+        ...(current || {}),
+        log_analysis: { ok: false, error: error.message },
+      }))
+    } finally {
+      setLogRunning(false)
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_42%),linear-gradient(180deg,#020617_0%,#07111f_48%,#020617_100%)] text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10">
@@ -1097,17 +1135,37 @@ export default function App() {
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="min-w-0">
                   <p className="text-xs uppercase tracking-[0.35em] text-cyan-200/80">Log module</p>
-                  <h2 className="mt-2 text-3xl font-semibold text-white">File metadata and device activity</h2>
+                  <h2 className="mt-2 text-3xl font-semibold text-white">Direct log analysis</h2>
                   <p className="mt-2 text-sm text-slate-400">
-                    Log analysis from the latest pipeline run: EVTX parsing, USB detection, file-transfer hints, and session traces.
+                    Upload XML or EVTX log files directly for analysis. No forensic image required.
                   </p>
                 </div>
-                <button type="button" onClick={() => setActiveTab('carver')}
-                  className="shrink-0 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 hover:bg-white/10">
-                  Open File Carver
-                </button>
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => setActiveTab('carver')}
+                    className="shrink-0 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 hover:bg-white/10">
+                    Open File Carver
+                  </button>
+                </div>
               </div>
             </div>
+
+            <div className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
+              <h3 className="text-lg font-semibold text-white">Upload log file</h3>
+              <p className="mt-2 text-sm text-slate-400">
+                Select an XML or EVTX file to analyze directly. The file will be parsed for USB events, file transfers, and user activity.
+              </p>
+              <label className="mt-4 flex cursor-pointer flex-col gap-3 rounded-[1.5rem] border border-dashed border-cyan-300/30 bg-cyan-300/5 p-5 text-sm text-slate-300 transition hover:border-cyan-300/60 hover:bg-cyan-300/10">
+                <span className="text-xs uppercase tracking-[0.3em] text-cyan-200/80">Log file upload</span>
+                <span className="text-base text-white">Choose an XML or EVTX file</span>
+                <span className="break-words text-slate-400">{logFileNote}</span>
+                <input type="file" className="hidden" onChange={handleLogFileChange} accept=".xml,.evtx" />
+              </label>
+              <button type="button" onClick={runLogAnalysis} disabled={logRunning || !logSelectedFile}
+                className="mt-4 rounded-full bg-cyan-400 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60">
+                {logRunning ? 'Analyzing…' : 'Analyze Log File'}
+              </button>
+            </div>
+
             <div className="xl:col-span-2"><LogIntelligencePanel logAnalysis={logAnalysis} /></div>
             <div className="xl:col-span-2"><SessionTracePanel logAnalysis={logAnalysis} /></div>
             <section className="min-w-0 rounded-[2rem] border border-white/10 bg-slate-950/80 p-6 shadow-2xl xl:col-span-2">
@@ -1119,7 +1177,7 @@ export default function App() {
                     <p className="mt-1 break-words">{entry.message}</p>
                   </div>
                 )) : (
-                  <p className="text-sm text-slate-400">No run events yet. Use the File Carver tab to run the pipeline.</p>
+                  <p className="text-sm text-slate-400">No run events yet. Upload a log file above or use the File Carver tab.</p>
                 )}
               </div>
             </section>

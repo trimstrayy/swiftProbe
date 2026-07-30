@@ -166,4 +166,4 @@ def optional_auth(fn: Callable) -> Callable:
         g.current_user = user
         return fn(*args, **kwargs)
 
-    return wrapper
+    return wrapper 

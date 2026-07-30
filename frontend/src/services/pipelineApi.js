@@ -175,6 +175,22 @@ export async function runRamAnalysisByUpload({ caseId, file }) {
   return parseJson(response)
 }
 
+export async function runLogAnalysisByUpload({ caseId, file, logPaths }) {
+  const formData = new FormData()
+  formData.append('case_id', caseId)
+  formData.append('artifact_file', file)
+  if (logPaths) {
+    formData.append('log_paths', Array.isArray(logPaths) ? logPaths.join(',') : logPaths)
+  }
+  const authHeaders = await getAuthFormDataHeaders()
+  const response = await fetch('/api/log/analyze-upload', {
+    method: 'POST',
+    headers: authHeaders,
+    body: formData,
+  })
+  return parseJson(response)
+}
+
 // ── Report Generator API ─────────────────────────────────────────────────
 
 export async function generateReport(caseMeta) {

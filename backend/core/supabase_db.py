@@ -36,8 +36,6 @@ try:
 except Exception:  # pragma: no cover - import availability depends on env
     create_client = None
 
-_SUPABASE_CLIENT = None
-
 
 def get_supabase_config():
     """Return the first configured Supabase URL/key pair.
@@ -59,20 +57,25 @@ def get_supabase_config():
 
 
 def get_supabase_client():
-    global _SUPABASE_CLIENT
+    """Create a fresh Supabase client for this call.
 
-    if _SUPABASE_CLIENT is None:
-        if create_client is None:
-            return None
+    Intentionally NOT cached as a module-level singleton — a shared
+    client's underlying HTTP connection pool is not safe to reuse
+    across Flask's request threads and causes intermittent
+    "[Errno 35] Resource temporarily unavailable" failures during
+    token verification under concurrent requests. Creating a new
+    client per call is slightly more overhead but eliminates that
+    race entirely.
+    """
+    if create_client is None:
+        return None
 
-        supabase_url, supabase_key = get_supabase_config()
+    supabase_url, supabase_key = get_supabase_config()
 
-        if not supabase_url or not supabase_key:
-            return None
+    if not supabase_url or not supabase_key:
+        return None
 
-        try:
-            _SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
-        except Exception:
-            return None
-
-    return _SUPABASE_CLIENT
+    try:
+        return create_client(supabase_url, supabase_key)
+    except Exception:
+        return None

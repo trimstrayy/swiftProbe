@@ -529,6 +529,67 @@ def analyze_log_artifacts():
         ), 500
 
 
+@app.post("/api/log/analyze-upload")
+@require_auth
+def analyze_log_upload():
+    """Accept a direct file upload (XML, EVTX, etc.) and analyze it without requiring a forensic image."""
+    if "artifact_file" not in request.files:
+        return _json_error("artifact_file is required.", 400)
+
+    uploaded_file = request.files["artifact_file"]
+    if not uploaded_file or not uploaded_file.filename:
+        return _json_error("No file selected.", 400)
+
+    case_id = request.form.get("case_id", "default")
+    log_paths = request.form.get("log_paths")
+    
+    # Parse log_paths if provided as comma-separated string
+    if log_paths and isinstance(log_paths, str):
+        log_paths = [path.strip() for path in log_paths.split(",") if path.strip()]
+    elif not log_paths:
+        log_paths = None
+
+    try:
+        # Save the uploaded file
+        upload_dir = UPLOAD_ROOT / "logs" / secure_filename(str(case_id))
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        original_name = secure_filename(uploaded_file.filename)
+        stored_name = f"{uuid4().hex}_{original_name}"
+        stored_path = upload_dir / stored_name
+        uploaded_file.save(stored_path)
+
+        # Analyze the uploaded artifact directly
+        result = analyze_uploaded_artifact(
+            str(stored_path),
+            case_id=str(case_id) if case_id else None,
+            log_paths=log_paths,
+        )
+        result["ok"] = True
+        result["uploaded_filename"] = uploaded_file.filename
+        result["stored_path"] = str(stored_path)
+        
+        return jsonify(result)
+    except FileNotFoundError as exc:
+        logger.exception("Log analysis uploaded file not found")
+        return jsonify(
+            {
+                "ok": False,
+                "case_id": case_id,
+                "error": str(exc),
+            }
+        ), 404
+    except Exception as exc:
+        logger.exception("Log analysis upload endpoint failed")
+        return jsonify(
+            {
+                "ok": False,
+                "case_id": case_id,
+                "error": str(exc),
+            }
+        ), 500
+
+
 # ── Report Generator endpoint ──────────────────────────────────────────────
 
 
