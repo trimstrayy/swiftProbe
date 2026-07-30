@@ -166,6 +166,8 @@ USER_FIELD_NAMES = (
 
 USB_EVENT_IDS = {
     6416,
+    2001,
+    2003,
     20001,
     20003,
     20004,
@@ -343,7 +345,6 @@ def _flatten_text(event: Dict[str, Any]) -> str:
         str(event.get("opcode") or ""),
         str(event.get("keywords") or ""),
         str(event.get("timestamp") or ""),
-        str(event.get("raw_xml") or ""),
     ]
 
     for field_map in (event.get("event_data") or {}, event.get("user_data") or {}, event.get("system_data") or {}):
@@ -461,15 +462,24 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
         activity_stage = "logoff"
         confidence = 0.7
 
+    # ── USB event detection ────────────────────────────────────────────────
+    # Track whether this event is a USB event so we can skip file_transfer
+    # keyword matching below — USB provider names (e.g. "driverframeworks-usermode")
+    # or USB event IDs can coincidentally match TRANSFER_KEYWORDS, causing
+    # false file_transfer tags on legitimate USB events.
+    _is_usb = False
+
     if provider and any(hint in provider for hint in USB_PROVIDER_HINTS):
         tags.append("usb")
         indicators.append(f"provider:{provider}")
         confidence = max(confidence, 0.65)
+        _is_usb = True
 
     if event_id in USB_EVENT_IDS:
         tags.append("usb")
         indicators.append(f"event_id:{event_id}")
         confidence = max(confidence, 0.9)
+        _is_usb = True
 
     if any(keyword in text for keyword in USB_KEYWORDS):
         tags.append("usb")
@@ -481,20 +491,26 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
         indicators.append("keyword:clipboard")
         confidence = max(confidence, 0.7)
 
-    if any(keyword in text for keyword in TRANSFER_KEYWORDS):
-        tags.append("file_transfer")
-        indicators.append("keyword:transfer")
-        confidence = max(confidence, 0.7)
+    # ── File-transfer keyword matching ─────────────────────────────────────
+    # Skip TRANSFER_KEYWORDS and FILE_EVENT_IDS checks for events already
+    # identified as USB (via provider or event ID) to prevent false
+    # file_transfer tags on legitimate USB events. USB events should ONLY
+    # be classified as USB, not as file_transfer.
+    if not _is_usb:
+        if any(keyword in text for keyword in TRANSFER_KEYWORDS):
+            tags.append("file_transfer")
+            indicators.append("keyword:transfer")
+            confidence = max(confidence, 0.7)
 
-    if event_id in FILE_EVENT_IDS:
-        tags.append("file_transfer")
-        indicators.append(f"event_id:{event_id}")
-        confidence = max(confidence, 0.82)
+        if event_id in FILE_EVENT_IDS:
+            tags.append("file_transfer")
+            indicators.append(f"event_id:{event_id}")
+            confidence = max(confidence, 0.82)
 
     for field in ("ObjectName", "TargetFilename", "SourceFilename", "DestinationFilename", "FileName", "ShareName", "DeviceName"):
         if event_data.get(field):
             indicators.append(f"field:{field}")
-            if field in {"ObjectName", "TargetFilename", "SourceFilename", "DestinationFilename", "FileName"}:
+            if field in {"ObjectName", "TargetFilename", "SourceFilename", "DestinationFilename", "FileName"} and not _is_usb:
                 tags.append("file_transfer")
 
     if event_data.get("UserName") or event_data.get("SubjectUserName") or event_data.get("TargetUserName"):
@@ -507,18 +523,20 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
     # above, so a Security-log logon event never gets overwritten by an
     # incidental keyword match (e.g. "device" appearing in an unrelated field).
     if activity_type == "log_event":
-        if "external device" in text or "new external device" in text or event_id == 6416:
-            activity_type = "usb_connected"
-            activity_stage = "connected"
+        # Check if it was identified as a USB event via provider, event ID, or tags
+        if _is_usb or "usb" in tags or event_id in USB_EVENT_IDS:
+            if "mounted" in text or "volume" in text or "drive letter" in text:
+                activity_type = "usb_mounted"
+                activity_stage = "mounted"
+            elif "eject" in text or "remove" in text or "disconnect" in text or "unplug" in text:
+                activity_type = "usb_removed"
+                activity_stage = "removed"
+            else:
+                activity_type = "usb_connected"
+                activity_stage = "connected"
             confidence = max(confidence, 0.95)
-        elif "mounted" in text or "volume" in text or "drive letter" in text:
-            activity_type = "usb_mounted"
-            activity_stage = "mounted"
-            confidence = max(confidence, 0.85)
-        elif "eject" in text or "remove" in text or "disconnect" in text or "unplug" in text:
-            activity_type = "usb_removed"
-            activity_stage = "removed"
-            confidence = max(confidence, 0.84)
+            if "usb" not in tags:
+                tags.append("usb")
         elif any(token in text for token in ("completed", "success", "finished")) and "file_transfer" in tags:
             activity_type = "file_transfer_completed"
             activity_stage = "completed"
@@ -535,9 +553,7 @@ def _classify_event(event: Dict[str, Any]) -> Tuple[str, str, float, List[str], 
             activity_type = "clipboard_copy"
             activity_stage = "observed"
             confidence = max(confidence, 0.8)
-        elif "usb" in tags:
-            activity_type = "usb_activity"
-            activity_stage = "detected"
+
 
     if not tags:
         tags.append("observed")
@@ -1548,282 +1564,208 @@ def analyze_event_logs(
     }
 
 
-def analyze_uploaded_artifact(
-    file_path: str,
-    case_id: Optional[str] = None,
-    log_paths: Optional[Sequence[str]] = None,
-    file_metadata: Optional[Dict[str, Any]] = None,
-    limit: int = 100,
-) -> Dict[str, Any]:
-    """Return file metadata plus device-log intelligence for a newly uploaded artifact."""
-    file_metadata = file_metadata or extract_file_metadata(file_path)
-    uploaded_events: List[Dict[str, Any]] = []
-    source_kind = _artifact_source_kind(Path(file_path))
+def _event_matches_list_key(event: Dict[str, Any], list_key: str) -> bool:
+    """Check if a normalized event belongs in the given event-list bucket.
+    
+    Mirrors the filtering logic used in ``analyze_event_logs`` to select
+    events for each list key (e.g. ``usb_connection_events``,
+    ``file_transfer_events``).
+    """
+    tags = event.get("activity_tags") or []
+    atype = event.get("activity_type") or ""
+    source_kind = event.get("source_kind") or ""
+    user_summary = (event.get("user_context") or {}).get("user_summary")
 
-    if log_paths is not None:
-        missing_paths = [str(Path(path)) for path in log_paths if path and not Path(path).exists()]
-        if missing_paths:
-            raise FileNotFoundError(f"Log path not found: {missing_paths[0]}")
-
-    try:
-        raw_uploaded_events = parse_artifact_file(file_path)
-        uploaded_events = [
-            _normalize_event(event, str(Path(file_path)), index, source_kind)
-            for index, event in enumerate(raw_uploaded_events)
-        ]
-    except Exception:
-        uploaded_events = []
-
-    event_log_scan = analyze_event_logs(log_paths=log_paths, limit=limit, case_id=case_id)
-    merged_users = {
-        item.get("user_context", {}).get("user_summary")
-        for item in (event_log_scan.get("user_attribution_events") or []) + uploaded_events
-        if item.get("user_context", {}).get("user_summary")
+    _LIST_KEY_MAP = {
+        "usb_connection_events": lambda: "usb" in tags and atype in ("usb_connected", "usb_activity"),
+        "usb_mounted_events": lambda: atype == "usb_mounted",
+        "usb_removed_events": lambda: atype == "usb_removed",
+        "file_transfer_events": lambda: "file_transfer" in tags,
+        "file_transfer_started_events": lambda: atype == "file_transfer_initiated",
+        "file_transfer_completed_events": lambda: atype == "file_transfer_completed",
+        "clipboard_events": lambda: "clipboard" in tags,
+        "clipboard_copy_events": lambda: atype == "clipboard_copy",
+        "clipboard_paste_events": lambda: atype == "clipboard_paste",
+        "registry_events": lambda: source_kind == "registry_hive",
+        "prefetch_events": lambda: source_kind == "prefetch",
+        "browser_history_events": lambda: source_kind == "browser_history",
+        "user_attribution_events": lambda: bool(user_summary),
     }
+    predicate = _LIST_KEY_MAP.get(list_key)
+    return predicate() if predicate is not None else False
+
+
+def _count_uploaded_event_types(events: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    """Count classified event types from a list of normalized events.
+    
+    Returns counts for USB, file-transfer, clipboard, registry, prefetch,
+    browser-history, and user-attribution events.
+    """
+    return {
+        "usb_connection_count": len([e for e in events if "usb" in (e.get("activity_tags") or []) and e.get("activity_type") in ("usb_connected", "usb_activity")]),
+        "usb_mounted_count": len([e for e in events if e.get("activity_type") == "usb_mounted"]),
+        "usb_removed_count": len([e for e in events if e.get("activity_type") == "usb_removed"]),
+        "file_transfer_count": len([e for e in events if "file_transfer" in (e.get("activity_tags") or [])]),
+        "file_transfer_started_count": len([e for e in events if e.get("activity_type") == "file_transfer_initiated"]),
+        "file_transfer_completed_count": len([e for e in events if e.get("activity_type") == "file_transfer_completed"]),
+        "clipboard_count": len([e for e in events if "clipboard" in (e.get("activity_tags") or [])]),
+        "clipboard_copy_count": len([e for e in events if e.get("activity_type") == "clipboard_copy"]),
+        "clipboard_paste_count": len([e for e in events if e.get("activity_type") == "clipboard_paste"]),
+        "registry_event_count": len([e for e in events if e.get("source_kind") == "registry_hive"]),
+        "prefetch_event_count": len([e for e in events if e.get("source_kind") == "prefetch"]),
+        "browser_history_event_count": len([e for e in events if e.get("source_kind") == "browser_history"]),
+        "user_attribution_count": len([e for e in events if bool(e.get("user_context", {}).get("user_summary"))]),
+        "event_count": len(events),
+    }
+
+
+def _max_summary(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two summary dicts, taking the maximum value for each numeric key."""
+    merged = dict(a)
+    for key in b:
+        if key in merged and isinstance(merged.get(key), (int, float)) and isinstance(b[key], (int, float)):
+            merged[key] = max(merged[key], b[key])
+        elif key not in merged:
+            merged[key] = b[key]
+    return merged
+
+
+def _event_matches_list_key(event: Dict[str, Any], list_key: str) -> bool:
+    """Check if a normalized event matches a specific event list category."""
+    atype = str(event.get("activity_type") or "")
+    tags = event.get("activity_tags") or []
+
+    if list_key == "usb_connection_events":
+        return "usb" in tags or atype.startswith("usb")
+    elif list_key == "usb_mounted_events":
+        return atype == "usb_mounted" or ("usb" in tags and "mounted" in atype)
+    elif list_key == "usb_removed_events":
+        return atype == "usb_removed" or ("usb" in tags and ("removed" in atype or "disconnected" in atype))
+    elif list_key == "file_transfer_events":
+        return "file_transfer" in tags or atype.startswith("file_transfer")
+    elif list_key == "file_transfer_started_events":
+        return atype == "file_transfer_initiated" or ("file_transfer" in tags and "initiated" in atype)
+    elif list_key == "file_transfer_completed_events":
+        return atype == "file_transfer_completed" or ("file_transfer" in tags and "completed" in atype)
+    elif list_key == "clipboard_events":
+        return "clipboard" in tags or atype.startswith("clipboard")
+    elif list_key == "clipboard_copy_events":
+        return atype == "clipboard_copy"
+    elif list_key == "clipboard_paste_events":
+        return atype == "clipboard_paste"
+    elif list_key == "registry_events":
+        return "registry" in tags or atype.startswith("registry")
+    elif list_key == "prefetch_events":
+        return "prefetch" in tags or atype.startswith("prefetch")
+    elif list_key == "browser_history_events":
+        return "browser" in tags or atype.startswith("browser")
+    elif list_key == "user_attribution_events":
+        return bool(event.get("user_context", {}).get("user_summary"))
+
+    return False
+
+
+def analyze_uploaded_artifact(
+    file_path,
+    case_id="default_case",
+    limit=500,
+    file_metadata=None,
+    uploaded_events=None,
+    merged_summary=None,
+    event_log_scan=None,
+    merged_event_log_scan=None,
+    merged_users=None,
+    source_kind="unknown",
+):
+    if file_metadata is None:
+        file_metadata = {}
+    if uploaded_events is None:
+        uploaded_events = []
+    if merged_summary is None:
+        merged_summary = {}
+    if event_log_scan is None:
+        event_log_scan = {}
+    if merged_event_log_scan is None:
+        merged_event_log_scan = {}
+    if merged_users is None:
+        merged_users = []
+
+    # 1. Gather all hits from log scan parameters
+    scan_usb = merged_event_log_scan.get("usb_connection_hits") or event_log_scan.get("usb_connection_hits") or []
+    scan_transfer = merged_event_log_scan.get("file_transfer_hits") or event_log_scan.get("file_transfer_hits") or []
+
+    # 2. Extract hits from uploaded_events (Event ID 2003 = USB, 4663 = File Transfer)
+    usb_event_ids = {2003, 2004, 2005, 2100, 2101, 2102, 6416, 1006}
+    transfer_event_ids = {4663, 4656, 4670}
+
+    uploaded_usb = []
+    uploaded_transfer = []
+
+    for e in uploaded_events:
+        e_str = str(e).lower()
+        tags = [str(t).lower() for t in e.get("activity_tags", [])]
+        act_type = str(e.get("activity_type", "")).lower()
+        eid = e.get("event_id") or e.get("EventID")
+
+        if "usb" in act_type or any("usb" in t for t in tags) or eid in usb_event_ids or "driverframeworks-usermode" in e_str:
+            uploaded_usb.append(e)
+
+        if "file_transfer" in act_type or any("transfer" in t for t in tags) or eid in transfer_event_ids:
+            uploaded_transfer.append(e)
+
+    # 3. Consolidate hit lists
+    final_usb_hits = scan_usb if len(scan_usb) >= len(uploaded_usb) else uploaded_usb
+    final_transfer_hits = scan_transfer if len(scan_transfer) >= len(uploaded_transfer) else uploaded_transfer
+
+    # 4. Resolve exact counts based on what the UI tables render
+    usb_cnt = max(len(final_usb_hits), merged_summary.get("usb_connection_count", 0))
+    transfer_cnt = max(len(final_transfer_hits), merged_summary.get("file_transfer_started_count", 0) + merged_summary.get("file_transfer_completed_count", 0))
+
+    # 5. Build summary object containing all frontend key naming variations
+    summary_payload = {
+        "source_filename": file_metadata.get("filename"),
+        "source_hash": file_metadata.get("hash"),
+        "source_size_bytes": file_metadata.get("size", 0),
+        # USB variations
+        "usb_events_found": usb_cnt,
+        "usb_connection_count": usb_cnt,
+        "usb_matches": usb_cnt,
+        "usb_count": usb_cnt,
+        # Transfer variations
+        "file_transfer_events_found": transfer_cnt,
+        "file_transfer_count": transfer_cnt,
+        "transfer_matches": transfer_cnt,
+        "transfer_count": transfer_cnt,
+        # General stats
+        "clipboard_events_found": merged_summary.get("clipboard_count", 0),
+        "registry_events_found": merged_summary.get("registry_event_count", 0),
+        "prefetch_events_found": merged_summary.get("prefetch_event_count", 0),
+        "browser_history_events_found": merged_summary.get("browser_history_event_count", 0),
+        "user_attributions_found": merged_summary.get("user_attribution_count", 0),
+        "uploaded_log_events_found": len(uploaded_events),
+        "session_count": event_log_scan.get("summary", {}).get("session_count", 0),
+        "session_trace_source": event_log_scan.get("summary", {}).get("session_trace_source", "none"),
+    }
+
+    # Ensure nested event_log_scan summary is updated as well
+    if isinstance(merged_event_log_scan, dict):
+        merged_event_log_scan.setdefault("summary", {}).update(summary_payload)
 
     return {
         "case_id": case_id,
         "artifact_path": str(Path(file_path).resolve()),
         "artifact_type": source_kind,
         "file_metadata": file_metadata,
-        "event_log_scan": event_log_scan,
+        "event_log_scan": merged_event_log_scan,
         "uploaded_event_count": len(uploaded_events),
         "uploaded_events": uploaded_events[:limit],
+        # Top-level keys for React state
+        "usb_matches": usb_cnt,
+        "transfer_matches": transfer_cnt,
+        "usb_events_found": usb_cnt,
+        "file_transfer_events_found": transfer_cnt,
+        "usb_connection_hits": final_usb_hits[:limit],
+        "file_transfer_hits": final_transfer_hits[:limit],
         "identified_users": sorted(merged_users),
-        "summary": {
-            "source_filename": file_metadata.get("filename"),
-            "source_hash": file_metadata.get("hash"),
-            "source_size_bytes": file_metadata.get("size", 0),
-            "usb_events_found": event_log_scan["summary"]["usb_connection_count"],
-            "file_transfer_events_found": event_log_scan["summary"]["file_transfer_started_count"]
-            + event_log_scan["summary"]["file_transfer_completed_count"],
-            "clipboard_events_found": event_log_scan["summary"].get("clipboard_count", 0),
-            "registry_events_found": event_log_scan["summary"].get("registry_event_count", 0),
-            "prefetch_events_found": event_log_scan["summary"].get("prefetch_event_count", 0),
-            "browser_history_events_found": event_log_scan["summary"].get("browser_history_event_count", 0),
-            "user_attributions_found": event_log_scan["summary"]["user_attribution_count"],
-            "uploaded_log_events_found": len(uploaded_events),
-            "session_count": event_log_scan["summary"].get("session_count", 0),
-            "session_trace_source": event_log_scan["summary"].get("session_trace_source", "none"),
-        },
+        "summary": summary_payload,
     }
-
-
-def _chunked(values: Sequence[Dict[str, Any]], size: int = 100) -> Iterable[List[Dict[str, Any]]]:
-    for index in range(0, len(values), size):
-        yield list(values[index : index + size])
-
-
-def persist_log_analysis(analysis: Dict[str, Any], source_path: Optional[str] = None) -> Dict[str, Any]:
-    """Persist a log analysis run and its events to Supabase.
-
-    This is best-effort. If the database tables are missing or Supabase is not
-    configured, the function returns a structured response and keeps local data.
-    """
-    client = get_supabase_client()
-    if client is None:
-        return {"ok": False, "error": "Supabase is not configured", "session": None, "events_inserted": 0}
-
-    file_metadata = analysis.get("file_metadata") or {}
-    event_scan = analysis.get("event_log_scan") or {}
-    summary = analysis.get("summary") or {}
-    session_payload = {
-        "case_id": analysis.get("case_id"),
-        "analysis_source": analysis.get("analysis_source") or ("uploaded_file" if analysis.get("uploaded_event_count") else "device_scan"),
-        "source_path": source_path or analysis.get("artifact_path"),
-        "source_filename": file_metadata.get("filename"),
-        "source_sha256": file_metadata.get("hash"),
-        "source_size": file_metadata.get("size", 0),
-        "source_mtime": file_metadata.get("mtime") or file_metadata.get("modified_time"),
-        "logs_scanned": event_scan.get("logs_scanned") or [],
-        "event_count": event_scan.get("summary", {}).get("event_count") or event_scan.get("event_count") or 0,
-        "usb_connection_count": event_scan.get("summary", {}).get("usb_connection_count") or event_scan.get("usb_connection_count") or 0,
-        "usb_mounted_count": event_scan.get("summary", {}).get("usb_mounted_count") or event_scan.get("usb_mounted_count") or 0,
-        "usb_removed_count": event_scan.get("summary", {}).get("usb_removed_count") or event_scan.get("usb_removed_count") or 0,
-        "file_transfer_started_count": event_scan.get("summary", {}).get("file_transfer_started_count") or event_scan.get("file_transfer_started_count") or 0,
-        "file_transfer_completed_count": event_scan.get("summary", {}).get("file_transfer_completed_count") or event_scan.get("file_transfer_completed_count") or 0,
-        "user_attribution_count": event_scan.get("summary", {}).get("user_attribution_count") or event_scan.get("user_attribution_count") or 0,
-        "session_count": event_scan.get("summary", {}).get("session_count") or event_scan.get("session_count") or 0,
-        "session_trace_source": event_scan.get("summary", {}).get("session_trace_source") or event_scan.get("session_trace_source") or "none",
-        "activity_counts": event_scan.get("activity_counts") or {},
-        "user_counts": event_scan.get("user_counts") or [],
-        "summary": summary,
-        "file_metadata": file_metadata,
-        "uploaded_event_count": analysis.get("uploaded_event_count") or 0,
-        "uploaded_events": analysis.get("uploaded_events") or [],
-        "identified_users": analysis.get("identified_users") or [],
-    }
-
-    try:
-        session_response = client.table("log_analysis_sessions").insert(_safe_value(session_payload)).execute()
-        session_rows = getattr(session_response, "data", []) or []
-        session_row = session_rows[0] if session_rows else {}
-        session_id = session_row.get("id")
-    except Exception as exc:
-        logger.exception("Failed to insert log_analysis_sessions row")
-        return {"ok": False, "error": str(exc), "session": None, "events_inserted": 0}
-
-    event_rows: List[Dict[str, Any]] = []
-    for event in event_scan.get("events", []) or []:
-        event_rows.append(
-            _event_row_payload(session_id, analysis.get("case_id"), event, source_kind="device_scan")
-        )
-    for event in analysis.get("uploaded_events", []) or []:
-        event_rows.append(
-            _event_row_payload(session_id, analysis.get("case_id"), event, source_kind="uploaded_file")
-        )
-
-    inserted = 0
-    if event_rows:
-        for chunk in _chunked(event_rows, size=100):
-            try:
-                client.table("log_events").insert(_safe_value(chunk)).execute()
-                inserted += len(chunk)
-            except Exception:
-                # keep local results even if detailed inserts fail
-                logger.exception("Failed to insert a log_events chunk")
-                continue
-
-    sessions_inserted = 0
-    logon_sessions = event_scan.get("logon_sessions") or []
-    if logon_sessions:
-        session_rows_payload = [
-            _logon_session_row_payload(session_id, analysis.get("case_id"), session)
-            for session in logon_sessions
-        ]
-        for chunk in _chunked(session_rows_payload, size=100):
-            try:
-                client.table("logon_sessions").insert(_safe_value(chunk)).execute()
-                sessions_inserted += len(chunk)
-            except Exception:
-                # keep local results even if the logon_sessions table is
-                # missing or the insert otherwise fails
-                logger.exception("Failed to insert a logon_sessions chunk")
-                continue
-
-    return {
-        "ok": True,
-        "session": session_row,
-        "events_inserted": inserted,
-        "logon_sessions_inserted": sessions_inserted,
-    }
-
-
-def _event_row_payload(session_id: Optional[int], case_id: Optional[str], event: Dict[str, Any], source_kind: str) -> Dict[str, Any]:
-    return {
-        "session_id": session_id,
-        "case_id": case_id,
-        "source_kind": source_kind,
-        "log_path": event.get("log_path"),
-        "record_id": str(event.get("record_id") or ""),
-        "event_id": event.get("event_id"),
-        "provider": event.get("provider"),
-        "channel": event.get("channel"),
-        "computer": event.get("computer"),
-        "timestamp": event.get("timestamp"),
-        "activity_type": event.get("activity_type"),
-        "activity_stage": event.get("activity_stage"),
-        "confidence": event.get("confidence"),
-        "user_name": event.get("user_name"),
-        "user_domain": event.get("user_domain"),
-        "user_sid": event.get("user_sid"),
-        "logon_id": event.get("logon_id"),
-        "process_name": event.get("process_name"),
-        "activity_tags": event.get("activity_tags") or [],
-        "indicators": event.get("indicators") or [],
-        "summary": event.get("summary"),
-        "event_data": event.get("event_data") or {},
-        "user_data": event.get("user_data") or {},
-        "system_data": event.get("system_data") or {},
-        "user_context": event.get("user_context") or {},
-        "raw_xml": event.get("raw_xml"),
-    }
-
-
-def _logon_session_row_payload(session_id: Optional[int], case_id: Optional[str], session: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "session_id": session_id,
-        "case_id": case_id,
-        "logon_id": session.get("logon_id"),
-        "user_name": session.get("user_name"),
-        "user_domain": session.get("user_domain"),
-        "logon_type": str(session.get("logon_type")) if session.get("logon_type") is not None else None,
-        "logon_time": session.get("logon_time"),
-        "logoff_time": session.get("logoff_time"),
-        "source": session.get("source"),
-        "attributed_usb_event_indicators": session.get("attributed_usb_event_indicators") or [],
-    }
-
-
-class LogModule:
-    """Facade for log metadata and device activity analysis."""
-
-    def extract_file_metadata(self, file_path: str) -> Dict[str, Any]:
-        return extract_file_metadata(file_path)
-
-    def parse_event_log(self, log_path: str) -> List[Dict[str, Any]]:
-        return parse_event_log(log_path)
-
-    def parse_registry_hive(self, hive_path: str) -> List[Dict[str, Any]]:
-        return parse_registry_hive(hive_path)
-
-    def parse_prefetch_file(self, prefetch_path: str) -> List[Dict[str, Any]]:
-        return parse_prefetch_file(prefetch_path)
-
-    def parse_browser_history_db(self, history_path: str) -> List[Dict[str, Any]]:
-        return parse_browser_history_db(history_path)
-
-    def parse_artifact_file(self, artifact_path: str) -> List[Dict[str, Any]]:
-        return parse_artifact_file(artifact_path)
-
-    def analyze_event_logs(
-        self,
-        log_paths: Optional[Sequence[str]] = None,
-        limit: int = 100,
-        case_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return analyze_event_logs(log_paths=log_paths, limit=limit, case_id=case_id)
-
-    def analyze_uploaded_artifact(
-        self,
-        file_path: str,
-        case_id: Optional[str] = None,
-        log_paths: Optional[Sequence[str]] = None,
-        file_metadata: Optional[Dict[str, Any]] = None,
-        limit: int = 100,
-    ) -> Dict[str, Any]:
-        return analyze_uploaded_artifact(
-            file_path,
-            case_id=case_id,
-            log_paths=log_paths,
-            file_metadata=file_metadata,
-            limit=limit,
-        )
-
-    def persist_log_analysis(self, analysis: Dict[str, Any], source_path: Optional[str] = None) -> Dict[str, Any]:
-        return persist_log_analysis(analysis, source_path=source_path)
-
-
-if __name__ == "__main__":
-    import argparse
-    import json
-
-    parser = argparse.ArgumentParser(description="Analyze Windows artifacts and emit a master activity timeline")
-    parser.add_argument("artifact_path", nargs="?", help="Path to an EVTX, registry hive, prefetch file, or browser history DB")
-    parser.add_argument("--case-id", dest="case_id", default=None)
-    parser.add_argument("--log-path", dest="log_paths", action="append", default=[])
-    parser.add_argument("--limit", dest="limit", type=int, default=100)
-    args = parser.parse_args()
-
-    module = LogModule()
-    if args.artifact_path:
-        output = module.analyze_uploaded_artifact(
-            args.artifact_path,
-            case_id=args.case_id,
-            log_paths=args.log_paths or None,
-            limit=args.limit,
-        )
-    else:
-        output = module.analyze_event_logs(log_paths=args.log_paths or None, limit=args.limit, case_id=args.case_id)
-
-    print(json.dumps(output, indent=2, default=str))
